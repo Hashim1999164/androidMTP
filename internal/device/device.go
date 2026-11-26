@@ -31,9 +31,119 @@ type Storage struct {
 }
 
 // ProbeConnected is a light USB check for the plug-and-play watcher.
-// It does NOT open an MTP session (avoids fighting the mount path).
+// It does not start an MTP session, and it ignores Apple devices such as iPhone.
 func ProbeConnected(filter string) ([]Info, error) {
-	return listInfos(filter, false)
+	c := usb.NewContext()
+	list, err := c.GetDeviceList()
+	if err != nil {
+		return nil, err
+	}
+	if len(list) > 0 {
+		defer list.Done()
+	}
+
+	re, err := regexp.Compile(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []Info
+	for _, dev := range list {
+		info, ok := androidMTPInfo(dev)
+		if !ok {
+			continue
+		}
+		if filter != "" && re.FindString(info.ID) == "" {
+			continue
+		}
+		info.Index = len(out)
+		out = append(out, info)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no usable MTP devices found")
+	}
+	return out, nil
+}
+
+// androidMTPInfo reports a phone that is actually in File Transfer mode.
+// Apple's PTP interface looks similar on the bus and is skipped.
+func androidMTPInfo(dev *usb.Device) (Info, bool) {
+	dd, err := dev.GetDeviceDescriptor()
+	if err != nil || dd.IdVendor == 0x05ac {
+		return Info{}, false
+	}
+	var ifaceString byte
+	found := false
+	for i := byte(0); i < dd.NumConfigurations; i++ {
+		cfg, err := dev.GetConfigDescriptor(i)
+		if err != nil {
+			continue
+		}
+		for _, iface := range cfg.Interfaces {
+			for _, alt := range iface.AltSetting {
+				if !mtpEndpoints(alt.EndPoints) {
+					continue
+				}
+				ifaceString = alt.InterfaceStringIndex
+				found = true
+			}
+		}
+	}
+	if !found || ifaceString == 0 {
+		return Info{}, false
+	}
+
+	h, err := dev.Open()
+	if err != nil {
+		return Info{}, false
+	}
+	defer h.Close()
+
+	s, err := h.GetStringDescriptorASCII(ifaceString)
+	if err != nil || !strings.Contains(strings.ToUpper(s), "MTP") {
+		return Info{}, false
+	}
+
+	var parts []string
+	for _, idx := range []byte{dd.Manufacturer, dd.Product, dd.SerialNumber} {
+		if idx == 0 {
+			continue
+		}
+		s, err := h.GetStringDescriptorASCII(idx)
+		if err != nil || s == "" {
+			continue
+		}
+		parts = append(parts, s)
+	}
+	if len(parts) == 0 {
+		return Info{}, false
+	}
+	id := strings.Join(parts, " ")
+	info := Info{ID: id, Product: parts[0]}
+	if len(parts) >= 2 {
+		info.Manufacturer = parts[0]
+		info.Product = parts[1]
+	}
+	if len(parts) >= 3 {
+		info.Serial = strings.Join(parts[2:], " ")
+	}
+	return info, true
+}
+
+func mtpEndpoints(eps []usb.EndpointDescriptor) bool {
+	var inBulk, outBulk, inIntr bool
+	for i := range eps {
+		e := &eps[i]
+		switch {
+		case e.Direction() == usb.ENDPOINT_IN && e.TransferType() == usb.TRANSFER_TYPE_INTERRUPT:
+			inIntr = true
+		case e.Direction() == usb.ENDPOINT_IN && e.TransferType() == usb.TRANSFER_TYPE_BULK:
+			inBulk = true
+		case e.Direction() == usb.ENDPOINT_OUT && e.TransferType() == usb.TRANSFER_TYPE_BULK:
+			outBulk = true
+		}
+	}
+	return inBulk && outBulk && inIntr
 }
 
 // ListInfos enumerates connected MTP devices with storage metadata (for `list` / doctor).

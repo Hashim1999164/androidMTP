@@ -65,20 +65,24 @@ brew tap hashim1999164/tap 2>/dev/null || true
 brew trust hashim1999164/tap 2>/dev/null || brew trust --formula hashim1999164/tap/androidmtp 2>/dev/null || true
 
 echo "==> installing androidmtp"
-brew install hashim1999164/tap/androidmtp || brew upgrade hashim1999164/tap/androidmtp
+brew install hashim1999164/tap/androidmtp || true
+brew upgrade hashim1999164/tap/androidmtp || true
 
-echo "==> enabling plug-and-play (LaunchAgent)"
+PREFIX="$(brew --prefix androidmtp 2>/dev/null || true)"
+if [[ -n "${PREFIX}" && -x "${PREFIX}/driver/build.sh" ]]; then
+  echo "==> installing the Android MTP file system driver"
+  bash "${PREFIX}/driver/build.sh" || echo "warn: driver build needs Xcode signed in with your Apple ID. Until then the phone still mounts as a local volume through fuse-t."
+fi
+
+echo "==> enabling plug-and-play"
 androidmtp enable
 
-echo "==> installing the Android MTP file system driver"
-STAGE="$(mktemp -d)"
-if curl -fsSL "https://github.com/Hashim1999164/androidMTP/archive/refs/heads/main.tar.gz" | tar -xz -C "$STAGE"; then
-  bash "$STAGE"/androidMTP-main/driver/build.sh || echo "warn: driver build failed; the FSKit volume still works"
-else
-  echo "warn: could not download the driver sources"
+PROBE="$(mktemp -d /tmp/androidmtp-driver.XXXXXX)"
+if mount -t androidmtp /tmp/androidmtp-not-a-session "$PROBE" 2>&1 | grep -q 'is disabled'; then
+  echo "==> one switch: System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → Android MTP"
+  open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" || true
 fi
-rm -rf "$STAGE"
-open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" || true
+rmdir "$PROBE" 2>/dev/null || true
 
 echo
 echo "============================================"

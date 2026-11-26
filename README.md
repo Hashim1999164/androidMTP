@@ -46,7 +46,7 @@ The driver is a macOS file system extension (`driver/`). A LaunchAgent watches U
 
 ## Requirements
 
-- Apple Silicon Mac · macOS 15.4+
+- Apple Silicon Mac · macOS 26 or newer
 - Android in **File Transfer / MTP** mode
 - Data USB cable
 

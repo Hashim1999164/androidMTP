@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -82,7 +83,7 @@ func Run(ctx context.Context, opts Options) error {
 			notify.Banner("androidmtp", name+" connected — mounting…")
 		}
 
-		cmd := exec.CommandContext(ctx, bin, buildMountArgs(opts.MountOpts, info.Index)...)
+		cmd := exec.CommandContext(ctx, bin, buildMountArgs(opts.MountOpts, info)...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Start(); err != nil {
@@ -91,13 +92,10 @@ func Run(ctx context.Context, opts Options) error {
 			continue
 		}
 
-		// Wait briefly for mount to appear, then open Finder.
+		// The volume can take a few seconds while the phone opens the MTP session.
 		opened := false
-		deadline := time.Now().Add(8 * time.Second)
-		for time.Now().Before(deadline) {
-			if !alive(cmd.Process.Pid) {
-				break
-			}
+		deadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(deadline) && alive(cmd.Process.Pid) {
 			st, _ := status.Read()
 			if st != nil {
 				if ok, _ := mount.IsMounted(st.MountPoint); ok {
@@ -115,8 +113,8 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		if !opened {
 			failStreak++
-			if failStreak >= 3 && !opts.NoNotify {
-				notify.Banner("androidmtp", "Mount failed — unlock the phone, choose File Transfer, and turn on fuse-t under File System Extensions")
+			if failStreak >= 3 && !opts.NoNotify && !alive(cmd.Process.Pid) {
+				notify.Banner("androidmtp", "Mount failed — unlock the phone, choose File Transfer, and turn on Android MTP under File System Extensions")
 			}
 		} else {
 			failStreak = 0
@@ -138,12 +136,15 @@ func Run(ctx context.Context, opts Options) error {
 	}
 }
 
-func buildMountArgs(mo mount.Options, index int) []string {
+func buildMountArgs(mo mount.Options, info device.Info) []string {
 	args := []string{"mount"}
-	if mo.Selector != "" {
+	switch {
+	case mo.Selector != "":
 		args = append(args, "--dev", mo.Selector)
-	} else {
-		args = append(args, "--dev", fmt.Sprintf("%d", index))
+	case info.ID != "":
+		args = append(args, "--dev", regexp.QuoteMeta(info.ID))
+	default:
+		args = append(args, "--dev", fmt.Sprintf("%d", info.Index))
 	}
 	if mo.MountPoint != "" {
 		args = append(args, "--mount", mo.MountPoint)
