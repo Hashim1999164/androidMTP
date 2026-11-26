@@ -20,41 +20,44 @@ class Androidmtp < Formula
   def install
     ENV["CGO_ENABLED"] = "1"
 
+    fuse_root = buildpath/"fuse-t-prefix"
     resource("fuse-t").stage do
       system "pkgutil", "--expand-full", Dir["*.pkg"].first, "expanded"
       payload = "expanded/fuse-t-core.pkg/Payload/Library/Application Support/fuse-t"
-      fuse_root = buildpath/"fuse-t-prefix"
       mkdir_p fuse_root/"include"
       mkdir_p fuse_root/"lib"
-      mkdir_p fuse_root/"lib/pkgconfig"
       cp_r "#{payload}/include/fuse", fuse_root/"include/fuse"
-      cp Dir["#{payload}/lib/libfuse-t*"], fuse_root/"lib"
+      cp Dir["#{payload}/lib/libfuse-t*"], fuse_root/"lib/"
       cd fuse_root/"lib" do
         ln_sf Dir["libfuse-t-*.dylib"].first, "libfuse-t.dylib"
         ln_sf Dir["libfuse-t-*.a"].first, "libfuse-t.a"
       end
-      (fuse_root/"lib/pkgconfig/fuse.pc").write <<~EOS
-        prefix=#{fuse_root}
-        libdir=${prefix}/lib
-        includedir=${prefix}/include/fuse
-        Name: fuse-t
-        Description: FUSE-T
-        Version: 1.2.9
-        Libs: -L${libdir} -Wl,-rpath,${libdir} -lfuse-t
-        Cflags: -I${includedir}
-      EOS
-      ENV.prepend_path "PKG_CONFIG_PATH", fuse_root/"lib/pkgconfig"
-      ENV["CGO_CFLAGS"] = "-I#{fuse_root}/include/fuse"
-      ENV["CGO_LDFLAGS"] = "-L#{fuse_root}/lib -Wl,-rpath,#{fuse_root}/lib -lfuse-t"
     end
 
-    system "make", "build", "VERSION=#{version}"
+    cflags = "-I#{fuse_root}/include/fuse"
+    ldflags = "-L#{fuse_root}/lib -lfuse-t"
+
+    system "make", "build", "VERSION=#{version}", "CGO_CFLAGS=#{cflags}", "CGO_LDFLAGS=#{ldflags}"
+
     bin.install "bin/androidmtp"
+    lib.install Dir["#{fuse_root}/lib/libfuse-t*.dylib"]
+    lib.install Dir["#{fuse_root}/lib/libfuse-t*.a"]
+    cd lib do
+      ln_sf Dir["libfuse-t-*.dylib"].first, "libfuse-t.dylib"
+    end
+
+    # Point the binary at Cellar lib instead of the ephemeral build path.
+    dirty = `otool -l #{bin}/androidmtp`.lines.grep(/path /).map { |l| l[/path (.*) \(offset/, 1] }.compact
+    dirty.each do |p|
+      next if p.nil? || p.empty?
+      system "install_name_tool", "-delete_rpath", p, bin/"androidmtp"
+    end
+    system "install_name_tool", "-add_rpath", lib, bin/"androidmtp"
   end
 
   def caveats
     <<~EOS
-      Runtime requires FUSE-T (Finder volumes, no kext):
+      Runtime also needs the FUSE-T helpers (go-nfsv4):
 
         brew install --cask fuse-t
 
