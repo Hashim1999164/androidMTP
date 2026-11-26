@@ -30,8 +30,18 @@ type Storage struct {
 	TotalBytes  uint64
 }
 
-// ListInfos enumerates connected MTP devices and returns friendly metadata.
+// ProbeConnected is a light USB check for the plug-and-play watcher.
+// It does NOT open an MTP session (avoids fighting the mount path).
+func ProbeConnected(filter string) ([]Info, error) {
+	return listInfos(filter, false)
+}
+
+// ListInfos enumerates connected MTP devices with storage metadata (for `list` / doctor).
 func ListInfos(filter string) ([]Info, error) {
+	return listInfos(filter, true)
+}
+
+func listInfos(filter string, deep bool) ([]Info, error) {
 	c := usb.NewContext()
 	raw, err := mtp.FindDevices(c)
 	if err != nil {
@@ -80,27 +90,29 @@ func ListInfos(filter string) ([]Info, error) {
 			info.Serial = strings.Join(parts[2:], " ")
 		}
 
-		if err := d.Configure(); err == nil {
-			var di mtp.DeviceInfo
-			if err := d.GetDeviceInfo(&di); err == nil {
-				info.Model = di.Model
-				if info.Manufacturer == "" {
-					info.Manufacturer = di.Manufacturer
-				}
-			}
-			if sids, err := SelectStorages(d, ""); err == nil {
-				for _, sid := range sids {
-					var si mtp.StorageInfo
-					if err := d.GetStorageInfo(sid, &si); err != nil {
-						continue
+		if deep {
+			if err := d.Configure(); err == nil {
+				var di mtp.DeviceInfo
+				if err := d.GetDeviceInfo(&di); err == nil {
+					info.Model = di.Model
+					if info.Manufacturer == "" {
+						info.Manufacturer = di.Manufacturer
 					}
-					info.Storages = append(info.Storages, Storage{
-						ID:          sid,
-						Description: si.StorageDescription,
-						VolumeID:    si.VolumeLabel,
-						FreeBytes:   si.FreeSpaceInBytes,
-						TotalBytes:  si.MaxCapability,
-					})
+				}
+				if sids, err := SelectStorages(d, ""); err == nil {
+					for _, sid := range sids {
+						var si mtp.StorageInfo
+						if err := d.GetStorageInfo(sid, &si); err != nil {
+							continue
+						}
+						info.Storages = append(info.Storages, Storage{
+							ID:          sid,
+							Description: si.StorageDescription,
+							VolumeID:    si.VolumeLabel,
+							FreeBytes:   si.FreeSpaceInBytes,
+							TotalBytes:  si.MaxCapability,
+						})
+					}
 				}
 			}
 		}

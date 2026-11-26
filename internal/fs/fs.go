@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,7 +18,7 @@ import (
 
 const (
 	noParent     = 0xFFFFFFFF
-	blockSize    = 512
+	blockSize    = 4096
 	rootIno      = 1
 	storageShift = 33
 )
@@ -37,21 +38,23 @@ const (
 )
 
 type node struct {
-	kind    nodeKind
-	ino     uint64
-	name    string
-	storage uint32
-	handle  uint32 // MTP object handle; for storage roots = noParent
-	parent  string // absolute parent path
-	size    int64
-	mtime   time.Time
-	isDir   bool
+	kind     nodeKind
+	ino      uint64
+	name     string
+	storage  uint32
+	handle   uint32
+	parent   string
+	size     int64
+	mtime    time.Time
+	isDir    bool
+	fetched  bool     // directory listing cached
+	children []string // child basenames in listing order
 }
 
 type openFile struct {
 	path    string
 	node    *node
-	buf     *bytes.Buffer // write buffer for classic / create
+	buf     *bytes.Buffer
 	dirty   bool
 	android bool
 	editing bool
@@ -66,7 +69,7 @@ type FS struct {
 	uid     uint32
 	gid     uint32
 	mu      sync.Mutex
-	nodes   map[string]*node // path -> node
+	nodes   map[string]*node
 	opens   map[uint64]*openFile
 	nextFH  uint64
 	android bool
@@ -90,12 +93,14 @@ func New(dev *mtp.Device, sids []uint32, opts Options) (*FS, error) {
 		android: android,
 	}
 	fs.nodes["/"] = &node{
-		kind:  kindRoot,
-		ino:   rootIno,
-		name:  "/",
-		isDir: true,
-		mtime: time.Now(),
+		kind:    kindRoot,
+		ino:     rootIno,
+		name:    "/",
+		isDir:   true,
+		mtime:   time.Now(),
+		fetched: true,
 	}
+	var names []string
 	for _, sid := range sids {
 		var info mtp.StorageInfo
 		if err := dev.GetStorageInfo(sid, &info); err != nil {
@@ -116,12 +121,14 @@ func New(dev *mtp.Device, sids []uint32, opts Options) (*FS, error) {
 			isDir:   true,
 			mtime:   time.Now(),
 		}
+		names = append(names, name)
 	}
+	fs.nodes["/"].children = names
 	return fs, nil
 }
 
 func (fs *FS) Init() {
-	log.Printf("androidmtp fs ready (android_ext=%v storages=%d)", fs.android, len(fs.sids))
+	log.Printf("androidmtp fs ready (android_ext=%v storages=%d cache=on)", fs.android, len(fs.sids))
 }
 
 func (fs *FS) Destroy() {}
@@ -192,6 +199,10 @@ func (fs *FS) Opendir(p string) (int, uint64) {
 	if !n.isDir {
 		return -fuse.ENOTDIR, ^uint64(0)
 	}
+	// Warm directory cache once on open — Finder then hits cache for readdir/getattr storms.
+	if _, errc := fs.ensureFetchedLocked(p, n); errc != 0 {
+		return errc, ^uint64(0)
+	}
 	fs.nextFH++
 	fh := fs.nextFH
 	fs.opens[fh] = &openFile{path: p, node: n}
@@ -218,13 +229,12 @@ func (fs *FS) Readdir(p string,
 	if !n.isDir {
 		return -fuse.ENOTDIR
 	}
-	fill(".", nil, 0)
-	fill("..", nil, 0)
-
-	children, errc := fs.listChildrenLocked(p, n)
+	children, errc := fs.ensureFetchedLocked(p, n)
 	if errc != 0 {
 		return errc
 	}
+	fill(".", nil, 0)
+	fill("..", nil, 0)
 	for _, ch := range children {
 		st := fuse.Stat_t{}
 		fs.fillStat(ch, &st)
@@ -268,7 +278,6 @@ func (fs *FS) Create(p string, flags int, mode uint32) (int, uint64) {
 	if !parent.isDir || parent.kind == kindRoot {
 		return -fuse.EPERM, ^uint64(0)
 	}
-	// Create zero-byte object on device so handle exists; writers flush on release.
 	info := mtp.ObjectInfo{
 		StorageID:        parent.storage,
 		ObjectFormat:     mtp.OFC_Undefined,
@@ -277,50 +286,34 @@ func (fs *FS) Create(p string, flags int, mode uint32) (int, uint64) {
 		CompressedSize:   0,
 		ModificationDate: time.Now(),
 	}
+	child := &node{
+		kind:    kindFile,
+		name:    name,
+		storage: parent.storage,
+		parent:  parentPath,
+		size:    0,
+		mtime:   time.Now(),
+	}
 	if fs.android {
-		// Android prefers partial edit after create; start with empty object.
 		_, _, handle, err := fs.dev.SendObjectInfo(parent.storage, parent.handle, &info)
 		if err != nil {
 			log.Printf("SendObjectInfo: %v", err)
 			return -fuse.EIO, ^uint64(0)
 		}
 		if err := fs.dev.SendObject(bytes.NewReader(nil), 0); err != nil {
-			// Some devices reject 0-byte SendObject; delete and use classic buffer-only create.
 			_ = fs.dev.DeleteObject(handle)
 			handle = 0
 		}
-		child := &node{
-			kind:    kindFile,
-			ino:     uint64(handle)<<1 | 1,
-			name:    name,
-			storage: parent.storage,
-			handle:  handle,
-			parent:  parentPath,
-			size:    0,
-			mtime:   time.Now(),
-		}
-		fs.nodes[p] = child
-		fs.nextFH++
-		fh := fs.nextFH
-		of := &openFile{path: p, node: child, buf: &bytes.Buffer{}, dirty: true, android: fs.android}
-		fs.opens[fh] = of
-		return 0, fh
-	}
-
-	child := &node{
-		kind:    kindFile,
-		ino:     uint64(time.Now().UnixNano()),
-		name:    name,
-		storage: parent.storage,
-		handle:  0,
-		parent:  parentPath,
-		size:    0,
-		mtime:   time.Now(),
+		child.handle = handle
+		child.ino = uint64(handle)<<1 | 1
+	} else {
+		child.ino = uint64(time.Now().UnixNano())
 	}
 	fs.nodes[p] = child
+	fs.invalidateDirLocked(parentPath)
 	fs.nextFH++
 	fh := fs.nextFH
-	fs.opens[fh] = &openFile{path: p, node: child, buf: &bytes.Buffer{}, dirty: true}
+	fs.opens[fh] = &openFile{path: p, node: child, buf: &bytes.Buffer{}, dirty: true, android: fs.android}
 	return 0, fh
 }
 
@@ -378,6 +371,7 @@ func (fs *FS) flushWriteLocked(of *openFile) int {
 	n.ino = uint64(handle)<<1 | 1
 	n.mtime = time.Now()
 	of.dirty = false
+	fs.invalidateDirLocked(n.parent)
 	return 0
 }
 
@@ -417,7 +411,6 @@ func (fs *FS) Read(p string, buf []byte, off int64, fh uint64) int {
 	if fs.android {
 		err = fs.dev.AndroidGetPartialObject64(n.handle, &b, off, uint32(want))
 	} else {
-		// Classic: pull whole object (slow but compatible).
 		var full bytes.Buffer
 		err = fs.dev.GetObject(n.handle, &full)
 		if err == nil {
@@ -447,8 +440,6 @@ func (fs *FS) Write(p string, buf []byte, off int64, fh uint64) int {
 	}
 	n := of.node
 
-	// Prefer Android partial writes when the object already exists on device
-	// and we are not in whole-buffer create mode.
 	if fs.android && n.handle != 0 && (of.buf == nil || (!of.dirty && of.buf.Len() == 0)) {
 		if !of.editing {
 			if err := fs.dev.AndroidBeginEditObject(n.handle); err != nil {
@@ -546,7 +537,6 @@ func (fs *FS) Mkdir(p string, mode uint32) int {
 		log.Printf("mkdir SendObjectInfo: %v", err)
 		return -fuse.EIO
 	}
-	// Association objects typically need an empty SendObject on some stacks.
 	_ = fs.dev.SendObject(bytes.NewReader(nil), 0)
 	fs.nodes[p] = &node{
 		kind:    kindDir,
@@ -558,6 +548,7 @@ func (fs *FS) Mkdir(p string, mode uint32) int {
 		isDir:   true,
 		mtime:   time.Now(),
 	}
+	fs.invalidateDirLocked(parentPath)
 	return 0
 }
 
@@ -571,6 +562,7 @@ func (fs *FS) Unlink(p string) int {
 	if n.isDir {
 		return -fuse.EISDIR
 	}
+	parent := n.parent
 	if n.handle != 0 {
 		if err := fs.dev.DeleteObject(n.handle); err != nil {
 			log.Printf("DeleteObject: %v", err)
@@ -578,6 +570,7 @@ func (fs *FS) Unlink(p string) int {
 		}
 	}
 	delete(fs.nodes, p)
+	fs.invalidateDirLocked(parent)
 	return 0
 }
 
@@ -591,17 +584,19 @@ func (fs *FS) Rmdir(p string) int {
 	if !n.isDir || n.kind == kindRoot || n.kind == kindStorage {
 		return -fuse.EPERM
 	}
-	children, errc := fs.listChildrenLocked(p, n)
+	children, errc := fs.ensureFetchedLocked(p, n)
 	if errc != 0 {
 		return errc
 	}
 	if len(children) > 0 {
 		return -fuse.ENOTEMPTY
 	}
+	parent := n.parent
 	if err := fs.dev.DeleteObject(n.handle); err != nil {
 		return -fuse.EIO
 	}
 	delete(fs.nodes, p)
+	fs.invalidateDirLocked(parent)
 	return 0
 }
 
@@ -613,7 +608,7 @@ func (fs *FS) Rename(oldpath string, newpath string) int {
 		return errc
 	}
 	if path.Dir(oldpath) != path.Dir(newpath) {
-		return -fuse.EXDEV // MTP rarely supports cross-folder move
+		return -fuse.EXDEV
 	}
 	newName := path.Base(newpath)
 	if n.handle != 0 {
@@ -623,42 +618,63 @@ func (fs *FS) Rename(oldpath string, newpath string) int {
 			return -fuse.EIO
 		}
 	}
+	parent := n.parent
 	delete(fs.nodes, oldpath)
 	n.name = newName
 	fs.nodes[newpath] = n
+	fs.invalidateDirLocked(parent)
 	return 0
 }
 
-func (fs *FS) listChildrenLocked(p string, n *node) ([]*node, int) {
+// invalidateDirLocked marks a directory listing stale so the next open/readdir refreshes once.
+func (fs *FS) invalidateDirLocked(dir string) {
+	if n, ok := fs.nodes[dir]; ok && n.isDir {
+		n.fetched = false
+		n.children = nil
+	}
+}
+
+// ensureFetchedLocked returns children, fetching from the phone only if not cached.
+func (fs *FS) ensureFetchedLocked(p string, n *node) ([]*node, int) {
 	if n.kind == kindRoot {
 		var out []*node
-		for _, sid := range fs.sids {
-			for _, child := range fs.nodes {
-				if child.kind == kindStorage && child.storage == sid {
-					out = append(out, child)
-				}
+		for _, name := range n.children {
+			if ch := fs.nodes["/"+name]; ch != nil {
+				out = append(out, ch)
 			}
 		}
 		return out, 0
 	}
+	if n.fetched {
+		return fs.childNodesLocked(p, n), 0
+	}
+	return fs.fetchChildrenLocked(p, n)
+}
 
+func (fs *FS) childNodesLocked(p string, n *node) []*node {
+	out := make([]*node, 0, len(n.children))
+	for _, name := range n.children {
+		cp := path.Join(p, name)
+		if ch := fs.nodes[cp]; ch != nil {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+func (fs *FS) fetchChildrenLocked(p string, n *node) ([]*node, int) {
+	start := time.Now()
 	handles := mtp.Uint32Array{}
-	parentHandle := n.handle
-	if err := fs.dev.GetObjectHandles(n.storage, 0x0, parentHandle, &handles); err != nil {
+	if err := fs.dev.GetObjectHandles(n.storage, 0x0, n.handle, &handles); err != nil {
 		log.Printf("GetObjectHandles: %v", err)
 		return nil, -fuse.EIO
 	}
 
-	// Drop stale children under this path.
-	prefix := p
-	if prefix != "/" {
-		prefix += "/"
+	// Drop previous children of this directory only.
+	for _, name := range n.children {
+		delete(fs.nodes, path.Join(p, name))
 	}
-	for key, child := range fs.nodes {
-		if child.parent == p {
-			delete(fs.nodes, key)
-		}
-	}
+	n.children = n.children[:0]
 
 	var out []*node
 	for _, handle := range handles.Values {
@@ -671,11 +687,9 @@ func (fs *FS) listChildrenLocked(p string, n *node) ([]*node, int) {
 		}
 		childPath := path.Join(p, info.Filename)
 		size := int64(info.CompressedSize)
+		// Defer expensive ObjectSize prop lookup until a real read needs it.
 		if info.CompressedSize == 0xFFFFFFFF {
-			var val mtp.Uint64Value
-			if err := fs.dev.GetObjectPropValue(handle, mtp.OPC_ObjectSize, &val); err == nil {
-				size = int64(val.Value)
-			}
+			size = 0 // unknown; Getattr/Open can refine later if needed
 		}
 		isDir := info.ObjectFormat == mtp.OFC_Association
 		child := &node{
@@ -695,8 +709,11 @@ func (fs *FS) listChildrenLocked(p string, n *node) ([]*node, int) {
 			child.ino |= 1
 		}
 		fs.nodes[childPath] = child
+		n.children = append(n.children, info.Filename)
 		out = append(out, child)
 	}
+	n.fetched = true
+	log.Printf("listed %s (%d items) in %s", p, len(out), time.Since(start).Round(time.Millisecond))
 	return out, 0
 }
 
@@ -708,7 +725,6 @@ func (fs *FS) resolveLocked(p string) (*node, int) {
 	if n, ok := fs.nodes[p]; ok {
 		return n, 0
 	}
-	// Walk from root, listing as needed.
 	if p == "/" {
 		return fs.nodes["/"], 0
 	}
@@ -719,57 +735,65 @@ func (fs *FS) resolveLocked(p string) (*node, int) {
 		if part == "" {
 			continue
 		}
-		children, errc := fs.listChildrenLocked(cur, curNode)
-		if errc != 0 {
+		if _, errc := fs.ensureFetchedLocked(cur, curNode); errc != 0 {
 			return nil, errc
 		}
-		found := (*node)(nil)
-		for _, ch := range children {
-			if ch.name == part {
-				found = ch
-				break
-			}
-		}
+		next := path.Join(cur, part)
+		found := fs.nodes[next]
 		if found == nil {
 			return nil, -fuse.ENOENT
 		}
-		if cur == "/" {
-			cur = "/" + part
-		} else {
-			cur = cur + "/" + part
-		}
+		cur = next
 		curNode = found
 	}
 	return curNode, 0
 }
 
 // Mount starts the FUSE-T host and blocks until unmount.
+// Prefers SMB (local-feeling, faster than NFS). Tries FSKit on macOS 26+.
 func Mount(fsys *FS, mountpoint string, volname string, allowOther bool) error {
-	host := fuse.NewFileSystemHost(fsys)
-	opts := []string{
-		"-o", "fsname=androidmtp",
-		"-o", "volname=" + volname,
-		"-o", "local",
-		"-o", "noappledouble",
-		"-o", "noapplexattr",
-		"-s", // single-threaded — MTP is not concurrency-safe
-	}
-	if allowOther {
-		opts = append(opts, "-o", "allow_other")
-	}
-	// Ensure fuse-t helper (go-nfsv4) is findable.
 	pathEnv := os.Getenv("PATH")
 	extra := []string{
 		"/usr/local/bin",
 		filepathJoinHome(".fuse-t/usr/local/bin"),
+		"/Library/Application Support/fuse-t/bin",
 	}
 	os.Setenv("PATH", strings.Join(append(extra, pathEnv), string(os.PathListSeparator)))
 
-	ok := host.Mount(mountpoint, opts)
-	if !ok {
-		return fmt.Errorf("fuse mount failed — install FUSE-T: brew install --cask fuse-t")
+	backends := preferredBackends()
+	var lastErr string
+	for _, backend := range backends {
+		host := fuse.NewFileSystemHost(fsys)
+		opts := []string{
+			"-o", "fsname=androidmtp",
+			"-o", "volname=" + volname,
+			"-o", "local",
+			"-o", "noappledouble",
+			"-o", "noapplexattr",
+			"-o", "rwsize=131072",
+			"-o", "backend=" + backend,
+			"-s",
+		}
+		if allowOther {
+			opts = append(opts, "-o", "allow_other")
+		}
+		log.Printf("mounting with FUSE-T backend=%s at %s", backend, mountpoint)
+		if host.Mount(mountpoint, opts) {
+			return nil
+		}
+		lastErr = backend
+		log.Printf("backend %s failed, trying next…", backend)
 	}
-	return nil
+	return fmt.Errorf("fuse mount failed (tried %v, last=%s) — brew install --cask fuse-t", backends, lastErr)
+}
+
+func preferredBackends() []string {
+	// NFS = slow and appears under Network (localhost).
+	// SMB is much faster. FSKit (when enabled) feels closest to a local disk.
+	if runtime.GOOS == "darwin" {
+		return []string{"smb", "fskit", "nfs"}
+	}
+	return []string{"nfs"}
 }
 
 func filepathJoinHome(rel string) string {

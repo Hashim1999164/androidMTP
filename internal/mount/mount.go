@@ -193,5 +193,12 @@ func Eject() error {
 	}
 	_ = status.Clear()
 	fmt.Printf("ejected %s (%s)\n", st.VolumeName, st.MountPoint)
+	notifyDone(st.VolumeName)
 	return nil
+}
+
+func notifyDone(name string) {
+	// avoid import cycle — soft notification via osascript
+	_ = exec.Command("osascript", "-e",
+		`display notification "Ejected `+name+`" with title "androidmtp"`).Start()
 }

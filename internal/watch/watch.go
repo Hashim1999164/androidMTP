@@ -62,7 +62,7 @@ func Run(ctx context.Context, opts Options) error {
 			_ = status.Clear()
 		}
 
-		infos, err := device.ListInfos(opts.MountOpts.Selector)
+		infos, err := device.ProbeConnected(opts.MountOpts.Selector)
 		if err != nil || len(infos) == 0 {
 			failStreak = 0
 			sleep(ctx, opts.Interval)
