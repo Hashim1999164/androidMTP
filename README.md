@@ -1,18 +1,27 @@
 # androidMTP
 
-**Mount Android phones as normal Finder volumes on Apple Silicon.**
+**Plug your Android into a Mac. It shows up in Finder. That’s it.**
 
-Plug in USB → choose **File Transfer (MTP)** → the phone appears as an ejectable drive. Copy, paste, drag-and-drop in Finder or Terminal. No Android File Transfer app. No macFUSE kernel extension. No Reduced Security boot.
+Apple Silicon · File Transfer (MTP) · ejectable Finder volume · no Android File Transfer app · no macFUSE kext · no Reduced Security.
 
 ```
-Phone ──USB MTP──► androidmtp ──cgofuse──► FUSE-T (NFS) ──► Finder /Volumes
+Phone ──USB MTP──► androidmtp (background) ──FUSE-T──► Finder
 ```
 
-## One-liner install
+## One-liner (full plug-and-play)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Hashim1999164/androidMTP/main/install.sh | bash
 ```
+
+This installs FUSE-T + androidmtp **and enables the background agent**.
+
+Then:
+
+1. Unlock phone  
+2. Plug in USB  
+3. Choose **File Transfer / MTP**  
+4. Finder opens the phone automatically  
 
 ## Homebrew
 
@@ -20,78 +29,39 @@ curl -fsSL https://raw.githubusercontent.com/Hashim1999164/androidMTP/main/insta
 brew install --cask fuse-t
 brew tap hashim1999164/tap
 brew install androidmtp
+androidmtp enable    # turn on plug-and-play (done for you by install.sh)
 ```
 
-## Quick start
+## Daily use
 
-```bash
-# diagnose environment + detect phone
-androidmtp doctor
-
-# list connected MTP devices
-androidmtp list
-
-# mount into Finder (defaults to /Volumes/<Model> or ~/Volumes/<Model>)
-androidmtp mount
-
-# eject when done
-androidmtp eject
-
-# auto-mount whenever a phone is plugged in
-androidmtp serve
-# or persist across logins:
-androidmtp install-agent
-```
+| Action | Command |
+|--------|---------|
+| Plug-and-play status | `androidmtp status` |
+| Diagnose | `androidmtp doctor` |
+| Eject | Finder eject button, or `androidmtp eject` |
+| Turn auto-mount off | `androidmtp disable` |
+| Turn auto-mount on | `androidmtp enable` |
+| Manual mount | `androidmtp mount` |
 
 ## Requirements
 
-| | |
-|---|---|
-| Mac | Apple Silicon (arm64) recommended |
-| OS | macOS 13+ (tested on Sequoia / newer) |
-| Phone | Android in **File Transfer / MTP** mode |
-| Cable | Data-capable USB cable |
-| FUSE | [FUSE-T](https://www.fuse-t.org/) via `brew install --cask fuse-t` |
+- Apple Silicon Mac (arm64)
+- macOS 13+
+- Android phone in **File Transfer / MTP** mode
+- Data-capable USB cable
+- [FUSE-T](https://www.fuse-t.org/) (`brew install --cask fuse-t`)
 
-## CLI
+## How plug-and-play works
 
-| Command | Purpose |
-|---------|---------|
-| `androidmtp list` | Show connected MTP devices |
-| `androidmtp mount [dev]` | Mount device (`0`, ID regex, or first) |
-| `androidmtp eject` | Unmount / eject active volume |
-| `androidmtp status` | Show active mount |
-| `androidmtp serve` | Watch USB and auto-mount |
-| `androidmtp install-agent` | LaunchAgent for login auto-mount |
-| `androidmtp uninstall-agent` | Remove LaunchAgent |
-| `androidmtp doctor` | Environment + device diagnostics |
-
-### Mount flags
-
-```
---dev string          device index or ID regex
---mount path          mount point
---volname name        Finder volume name
---android             Android MTP extensions (default true)
---usb-timeout ms      USB timeout (default 5000)
---debug usb,data,mtp,fuse
-```
-
-## How it works
-
-1. **MTP engine** — pure Go MTP over `libusb` (battle-tested protocol stack from [go-mtpfs](https://github.com/hanwen/go-mtpfs)).
-2. **Filesystem** — `cgofuse` user-space FS (browse, read, write, mkdir, unlink, rename-in-folder).
-3. **Finder volume** — [FUSE-T](https://github.com/macos-fuse-t/fuse-t) bridges FUSE → local NFSv4 so macOS shows a normal ejectable volume **without a kernel extension**.
+A LaunchAgent runs `androidmtp serve` at login. It watches USB for MTP devices, mounts them via FUSE-T as a Finder volume, opens Finder, and shows a notification. Unplug or eject → it waits for the next phone.
 
 ## MTP limits (honest)
 
-MTP is an object protocol, not a block disk:
-
-| Works | Limited / fails clearly |
-|-------|-------------------------|
-| Browse, Quick Look, copy in/out | Cross-folder move/rename |
-| Create folders, delete files | In-place editor save-over on some devices |
-| Rename within the same folder | Deleting non-empty folders in one step |
+| Works | Limited |
+|-------|---------|
+| Browse, copy in/out, Quick Look | Cross-folder move |
+| Create folders, delete files | In-place editor save-over on some phones |
+| Rename in the same folder | One-shot delete of non-empty folders |
 
 ## Build from source
 
@@ -101,15 +71,13 @@ brew install --cask fuse-t
 git clone https://github.com/Hashim1999164/androidMTP.git
 cd androidMTP
 make build
-./bin/androidmtp doctor
+./bin/androidmtp enable
 ```
 
 ## Contributing
 
-PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Please run `make build` and `androidmtp doctor` before opening a PR.
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-MTP protocol code paths build on [go-mtpfs](https://github.com/hanwen/go-mtpfs) (BSD). FUSE hosting uses [cgofuse](https://github.com/winfsp/cgofuse) (MIT) with a small Darwin loader patch for user-local FUSE-T installs.
+MIT — see [LICENSE](LICENSE). Builds on [go-mtpfs](https://github.com/hanwen/go-mtpfs) (BSD) and [cgofuse](https://github.com/winfsp/cgofuse) (MIT).

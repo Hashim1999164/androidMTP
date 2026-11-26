@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"syscall"
 	"time"
 
 	"github.com/Hashim1999164/androidMTP/internal/device"
 	"github.com/Hashim1999164/androidMTP/internal/mount"
+	"github.com/Hashim1999164/androidMTP/internal/notify"
 	"github.com/Hashim1999164/androidMTP/internal/status"
 )
 
@@ -17,14 +19,23 @@ type Options struct {
 	Interval  time.Duration
 	MountOpts mount.Options
 	Once      bool
+	NoNotify  bool
+	NoFinder  bool
 }
 
-// Run polls for MTP devices and mounts the first one when none is mounted.
+// Run polls for MTP devices and auto-mounts them (plug and play).
 func Run(ctx context.Context, opts Options) error {
 	if opts.Interval <= 0 {
-		opts.Interval = 2 * time.Second
+		opts.Interval = time.Second
 	}
-	fmt.Fprintln(os.Stderr, "androidmtp daemon watching for MTP devices…")
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "androidmtp"
+	}
+
+	fmt.Fprintln(os.Stderr, "androidmtp: plug-and-play watcher active — connect a phone in File Transfer mode")
+
+	failStreak := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -44,24 +55,82 @@ func Run(ctx context.Context, opts Options) error {
 				sleep(ctx, opts.Interval)
 				continue
 			}
+			// Stale status (unplugged / crashed mount).
+			if st.MountPoint != "" {
+				_ = mount.Unmount(st.MountPoint)
+			}
 			_ = status.Clear()
 		}
 
 		infos, err := device.ListInfos(opts.MountOpts.Selector)
 		if err != nil || len(infos) == 0 {
+			failStreak = 0
 			sleep(ctx, opts.Interval)
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "detected %s — mounting\n", infos[0].ID)
-		mo := opts.MountOpts
-		if mo.Selector == "" {
-			mo.Selector = "0"
+		info := infos[0]
+		fmt.Fprintf(os.Stderr, "androidmtp: detected %s — mounting…\n", info.ID)
+		if !opts.NoNotify {
+			name := info.Model
+			if name == "" {
+				name = info.Product
+			}
+			if name == "" {
+				name = "Android"
+			}
+			notify.Banner("androidmtp", name+" connected — mounting…")
 		}
-		err = mount.Run(mo)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "mount error: %v\n", err)
+
+		cmd := exec.CommandContext(ctx, bin, buildMountArgs(opts.MountOpts, info.Index)...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "androidmtp: failed to start mount: %v\n", err)
 			sleep(ctx, opts.Interval)
+			continue
+		}
+
+		// Wait briefly for mount to appear, then open Finder.
+		opened := false
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			if !alive(cmd.Process.Pid) {
+				break
+			}
+			st, _ := status.Read()
+			if st != nil {
+				if ok, _ := mount.IsMounted(st.MountPoint); ok {
+					if !opts.NoFinder {
+						notify.Finder(st.MountPoint)
+					}
+					if !opts.NoNotify {
+						notify.Banner("androidmtp", st.VolumeName+" ready in Finder")
+					}
+					opened = true
+					break
+				}
+			}
+			sleep(ctx, 200*time.Millisecond)
+		}
+		if !opened {
+			failStreak++
+			if failStreak >= 3 && !opts.NoNotify {
+				notify.Banner("androidmtp", "Mount failed — unlock phone, choose File Transfer, unplug/replug")
+			}
+		} else {
+			failStreak = 0
+		}
+
+		err = cmd.Wait()
+		_ = status.Clear()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "androidmtp: mount ended: %v\n", err)
+			// Brief backoff before reclaiming USB after ptpcamerad races.
+			sleep(ctx, time.Second)
 		}
 		if opts.Once {
 			return err
@@ -69,12 +138,42 @@ func Run(ctx context.Context, opts Options) error {
 	}
 }
 
+func buildMountArgs(mo mount.Options, index int) []string {
+	args := []string{"mount"}
+	if mo.Selector != "" {
+		args = append(args, "--dev", mo.Selector)
+	} else {
+		args = append(args, "--dev", fmt.Sprintf("%d", index))
+	}
+	if mo.MountPoint != "" {
+		args = append(args, "--mount", mo.MountPoint)
+	}
+	if mo.VolumeName != "" {
+		args = append(args, "--volname", mo.VolumeName)
+	}
+	if mo.AllowOther {
+		args = append(args, "--allow-other")
+	}
+	if !mo.AndroidExt {
+		args = append(args, "--android=false")
+	}
+	if !mo.VFATMunge {
+		args = append(args, "--vfat=false")
+	}
+	if mo.USBTimeout > 0 {
+		args = append(args, "--usb-timeout", fmt.Sprintf("%d", mo.USBTimeout))
+	}
+	if mo.Debug != "" {
+		args = append(args, "--debug", mo.Debug)
+	}
+	return args
+}
+
 func alive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil
+	return syscall.Kill(pid, 0) == nil
 }
 
 func sleep(ctx context.Context, d time.Duration) {

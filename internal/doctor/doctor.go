@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/Hashim1999164/androidMTP/internal/agent"
 	"github.com/Hashim1999164/androidMTP/internal/device"
 	"github.com/Hashim1999164/androidMTP/internal/version"
 )
@@ -76,6 +77,12 @@ func Check() int {
 		fmt.Printf("[warn] androidmtp on PATH — not found (ok when running from ./bin)\n")
 	} else {
 		check("androidmtp on PATH", true, bin)
+	}
+
+	if agent.Enabled() {
+		check("plug-and-play", true, "enabled — phones auto-mount on connect")
+	} else {
+		fmt.Printf("[warn] plug-and-play — disabled  (run: androidmtp enable)\n")
 	}
 
 	// ptpcamerad often claims PTP/MTP interfaces first.

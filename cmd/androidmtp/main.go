@@ -14,6 +14,7 @@ import (
 	"github.com/Hashim1999164/androidMTP/internal/device"
 	"github.com/Hashim1999164/androidMTP/internal/doctor"
 	"github.com/Hashim1999164/androidMTP/internal/mount"
+	"github.com/Hashim1999164/androidMTP/internal/notify"
 	"github.com/Hashim1999164/androidMTP/internal/status"
 	"github.com/Hashim1999164/androidMTP/internal/version"
 	"github.com/Hashim1999164/androidMTP/internal/watch"
@@ -22,15 +23,18 @@ import (
 func main() {
 	root := &cobra.Command{
 		Use:   "androidmtp",
-		Short: "Mount Android MTP devices as Finder volumes on Apple Silicon",
+		Short: "Plug-and-play Android MTP → Finder volumes on Apple Silicon",
 		Long: `androidmtp mounts phones in USB File Transfer (MTP) mode as ejectable
-Finder volumes using FUSE-T — no kernel extension, no Android File Transfer app.
+Finder volumes using FUSE-T — no kernel extension.
 
-Typical flow:
-  1. brew install --cask fuse-t && brew install hashim1999164/tap/androidmtp
-  2. Unlock phone → File Transfer / MTP
-  3. androidmtp mount
-  4. Use Finder; androidmtp eject when done`,
+Plug and play (default after install):
+  1. Install once
+  2. Plug in Android → choose File Transfer / MTP
+  3. Phone appears in Finder automatically
+
+Manual:
+  androidmtp mount
+  androidmtp eject`,
 		Version: version.Version,
 	}
 
@@ -44,6 +48,8 @@ Typical flow:
 		usbTimeout int
 		debug      string
 		interval   time.Duration
+		noNotify   bool
+		noFinder   bool
 	)
 
 	mountFlags := func(cmd *cobra.Command) {
@@ -58,12 +64,8 @@ Typical flow:
 	}
 
 	opts := func() mount.Options {
-		sel := selector
-		if sel == "" && len(os.Args) > 0 {
-			// positional handled per-command
-		}
 		return mount.Options{
-			Selector:   sel,
+			Selector:   selector,
 			MountPoint: mountPoint,
 			VolumeName: volName,
 			AllowOther: allowOther,
@@ -99,7 +101,7 @@ Typical flow:
 
 	mountCmd := &cobra.Command{
 		Use:   "mount [device]",
-		Short: "Mount an MTP device into Finder",
+		Short: "Mount an MTP device into Finder (manual)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o := opts()
@@ -110,6 +112,27 @@ Typical flow:
 			defer stop()
 			errCh := make(chan error, 1)
 			go func() { errCh <- mount.Run(o) }()
+
+			// Open Finder once the volume is up.
+			go func() {
+				for i := 0; i < 40; i++ {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+					st, _ := status.Read()
+					if st != nil {
+						if ok, _ := mount.IsMounted(st.MountPoint); ok {
+							notify.Finder(st.MountPoint)
+							notify.Banner("androidmtp", st.VolumeName+" ready in Finder")
+							return
+						}
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}()
+
 			select {
 			case <-ctx.Done():
 				_ = mount.Eject()
@@ -132,14 +155,16 @@ Typical flow:
 
 	statusCmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show active mount status",
+		Short: "Show active mount + plug-and-play status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			as, _ := agent.Status()
+			fmt.Printf("plug-and-play: %s\n", as)
 			st, err := status.Read()
 			if err != nil {
 				return err
 			}
 			if st == nil {
-				fmt.Println("not mounted")
+				fmt.Println("volume: not mounted")
 				return nil
 			}
 			mounted, _ := mount.IsMounted(st.MountPoint)
@@ -150,8 +175,6 @@ Typical flow:
 			fmt.Printf("pid:     %d\n", st.PID)
 			fmt.Printf("since:   %s\n", st.StartedAt)
 			fmt.Printf("mounted: %v\n", mounted)
-			as, _ := agent.Status()
-			fmt.Printf("agent:   %s\n", as)
 			return nil
 		},
 	}
@@ -159,30 +182,36 @@ Typical flow:
 	serveCmd := &cobra.Command{
 		Use:     "serve",
 		Aliases: []string{"daemon"},
-		Short:   "Watch for MTP devices and auto-mount them",
+		Short:   "Watch USB and auto-mount MTP phones (used by plug-and-play agent)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return watch.Run(ctx, watch.Options{
 				Interval:  interval,
 				MountOpts: opts(),
+				NoNotify:  noNotify,
+				NoFinder:  noFinder,
 			})
 		},
 	}
 	mountFlags(serveCmd)
-	serveCmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "USB poll interval")
+	serveCmd.Flags().DurationVar(&interval, "interval", time.Second, "USB poll interval")
+	serveCmd.Flags().BoolVar(&noNotify, "no-notify", false, "disable macOS notifications")
+	serveCmd.Flags().BoolVar(&noFinder, "no-finder", false, "do not open Finder on mount")
 
-	installAgent := &cobra.Command{
-		Use:   "install-agent",
-		Short: "Install a LaunchAgent to auto-mount at login",
+	enableCmd := &cobra.Command{
+		Use:     "enable",
+		Aliases: []string{"install-agent"},
+		Short:   "Enable plug-and-play (auto-mount on USB connect)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bin, _ := os.Executable()
 			return agent.Install(bin)
 		},
 	}
-	uninstallAgent := &cobra.Command{
-		Use:   "uninstall-agent",
-		Short: "Remove the androidmtp LaunchAgent",
+	disableCmd := &cobra.Command{
+		Use:     "disable",
+		Aliases: []string{"uninstall-agent"},
+		Short:   "Disable plug-and-play auto-mount",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return agent.Uninstall()
 		},
@@ -190,13 +219,13 @@ Typical flow:
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose FUSE-T, libusb, and MTP connectivity",
+		Short: "Diagnose FUSE-T, libusb, agent, and MTP connectivity",
 		Run: func(cmd *cobra.Command, args []string) {
 			os.Exit(doctor.Check())
 		},
 	}
 
-	root.AddCommand(listCmd, mountCmd, umountCmd, statusCmd, serveCmd, installAgent, uninstallAgent, doctorCmd)
+	root.AddCommand(listCmd, mountCmd, umountCmd, statusCmd, serveCmd, enableCmd, disableCmd, doctorCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
