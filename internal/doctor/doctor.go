@@ -58,15 +58,21 @@ func Check() int {
 	}
 	check("FUSE-T", fuseOK, fuseDetail+"  (brew install --cask fuse-t)")
 
-	fskitOut, _ := exec.Command("pluginkit", "-m", "-i", "org.fuset.fskit-srv.module").Output()
-	fskitLine := strings.TrimSpace(string(fskitOut))
-	fskitOn := strings.HasPrefix(fskitLine, "+")
-	if fskitOn {
-		check("FSKit (local volume)", true, "enabled — mounts as a local filesystem, not Network")
-	} else if fskitLine != "" {
-		fmt.Printf("[warn] FSKit — installed but not enabled. Run: pluginkit -e use -i org.fuset.fskit-srv.module\n")
+	switch fskitState() {
+	case fskitReady:
+		check("FSKit (local volume)", true, "enabled — phone mounts beside Macintosh HD, not under Network")
+	case fskitInstalled:
+		fmt.Printf("[warn] FSKit — fuse-t is installed but off. System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → turn on fuse-t\n")
+	default:
+		fmt.Printf("[warn] FSKit — module not registered yet (install.sh registers it)\n")
+	}
+
+	driverOut, _ := exec.Command("pluginkit", "-m", "-i", "org.hashim.androidmtp.fsmodule").Output()
+	driverLine := strings.TrimSpace(string(driverOut))
+	if strings.HasPrefix(driverLine, "+") || driverLine != "" {
+		check("Android MTP driver", true, "installed — File System Extensions → Android MTP")
 	} else {
-		fmt.Printf("[warn] FSKit — module not registered yet (install.sh enables it)\n")
+		fmt.Printf("[warn] Android MTP driver — not installed yet (bash driver/build.sh)\n")
 	}
 
 	libusbOK := false
@@ -124,11 +130,40 @@ func Check() int {
 
 	fmt.Println(strings.Repeat("─", 48))
 	if ok {
-		fmt.Println("ready — connect phone in File Transfer mode and run: androidmtp mount")
+		fmt.Println("ready — plug in the phone, choose File Transfer, and it appears in Finder")
 		return 0
 	}
 	fmt.Println("fix the FAIL items above, then re-run: androidmtp doctor")
 	return 1
+}
+
+type fskitStatus int
+
+const (
+	fskitMissing fskitStatus = iota
+	fskitInstalled
+	fskitReady
+)
+
+// fskitState reports whether macOS will actually mount type "fuset".
+// pluginkit's "+" flag is not that switch.
+func fskitState() fskitStatus {
+	out, _ := exec.Command("pluginkit", "-m", "-i", "org.fuset.fskit-srv.module").Output()
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return fskitMissing
+	}
+	dir, err := os.MkdirTemp("", "androidmtp-fskit-")
+	if err != nil {
+		return fskitInstalled
+	}
+	defer os.RemoveAll(dir)
+	probe := exec.Command("mount", "-t", "fuset", "/tmp/androidmtp-not-a-session", dir)
+	msg, _ := probe.CombinedOutput()
+	if strings.Contains(string(msg), "is disabled") {
+		return fskitInstalled
+	}
+	return fskitReady
 }
 
 func human(n uint64) string {

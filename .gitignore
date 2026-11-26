@@ -1,5 +1,6 @@
 bin/
 dist/
+driver/build/
 *.test
 *.out
 .DS_Store

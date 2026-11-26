@@ -168,6 +168,11 @@ func Run(opts Options) error {
 	defer status.Clear()
 
 	fmt.Fprintf(os.Stderr, "mounted %s → %s\n", volName, mp)
+	if err := mtpfs.MountNative(fsys, mp, volName); err == nil {
+		return nil
+	} else {
+		fmt.Fprintf(os.Stderr, "androidmtp: %v\n", err)
+	}
 	return mtpfs.Mount(fsys, mp, volName, opts.AllowOther)
 }
 

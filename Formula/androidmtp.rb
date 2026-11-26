@@ -68,7 +68,12 @@ class Androidmtp < Formula
         brew install --cask fuse-t
         androidmtp status
 
-      Unlock phone → File Transfer / MTP → volume appears (SMB, cached listings).
+      Unlock phone → File Transfer / MTP → the phone appears in Finder
+      under Locations, next to Macintosh HD.
+
+      First launch also installs the Android MTP file system driver.
+      Turn it on under System Settings → General → Login Items & Extensions
+      → File System Extensions.
     EOS
   end
 

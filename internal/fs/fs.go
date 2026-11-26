@@ -750,7 +750,7 @@ func (fs *FS) resolveLocked(p string) (*node, int) {
 }
 
 // Mount starts the FUSE-T host and blocks until unmount.
-// Prefers SMB (local-feeling, faster than NFS). Tries FSKit on macOS 26+.
+// On macOS the only backend is Apple FSKit, so the phone is a local volume.
 func Mount(fsys *FS, mountpoint string, volname string, allowOther bool) error {
 	pathEnv := os.Getenv("PATH")
 	extra := []string{
@@ -782,16 +782,15 @@ func Mount(fsys *FS, mountpoint string, volname string, allowOther bool) error {
 			return nil
 		}
 		lastErr = backend
-		log.Printf("backend %s failed, trying next…", backend)
+		log.Printf("backend %s failed", backend)
 	}
-	return fmt.Errorf("fuse mount failed (tried %v, last=%s) — brew install --cask fuse-t", backends, lastErr)
+	return fmt.Errorf("local FSKit mount failed (tried %v, last=%s) — System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → turn on fuse-t", backends, lastErr)
 }
 
 func preferredBackends() []string {
-	// FSKit is Apple's in-kernel filesystem API (local volume, not Network).
-	// SMB/NFS are only fallbacks if the FSKit module is not enabled yet.
+	// FSKit only. SMB and NFS show up under Network, which is not a phone volume.
 	if runtime.GOOS == "darwin" {
-		return []string{"fskit", "smb", "nfs"}
+		return []string{"fskit"}
 	}
 	return []string{"nfs"}
 }

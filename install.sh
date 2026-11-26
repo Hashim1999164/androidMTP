@@ -47,8 +47,15 @@ fi
 if [[ -d "$APP/Contents/Extensions/FskitSrvModule.appex" ]]; then
   pluginkit -a "$APP/Contents/Extensions/FskitSrvModule.appex" || true
   pluginkit -e use -i org.fuset.fskit-srv.module || true
-  echo "==> Apple FSKit module enabled (local volume, not Network)"
 fi
+PROBE="$(mktemp -d /tmp/androidmtp-fskit.XXXXXX)"
+if mount -t fuset /tmp/androidmtp-not-a-session "$PROBE" 2>&1 | grep -q 'is disabled'; then
+  echo "==> one switch: System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → fuse-t"
+  open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" || true
+else
+  echo "==> Apple FSKit is on — the phone mounts as a local volume"
+fi
+rmdir "$PROBE" 2>/dev/null || true
 
 echo "==> installing libusb"
 brew install libusb
@@ -62,6 +69,16 @@ brew install hashim1999164/tap/androidmtp || brew upgrade hashim1999164/tap/andr
 
 echo "==> enabling plug-and-play (LaunchAgent)"
 androidmtp enable
+
+echo "==> installing the Android MTP file system driver"
+STAGE="$(mktemp -d)"
+if curl -fsSL "https://github.com/Hashim1999164/androidMTP/archive/refs/heads/main.tar.gz" | tar -xz -C "$STAGE"; then
+  bash "$STAGE"/androidMTP-main/driver/build.sh || echo "warn: driver build failed; the FSKit volume still works"
+else
+  echo "warn: could not download the driver sources"
+fi
+rm -rf "$STAGE"
+open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" || true
 
 echo
 echo "============================================"

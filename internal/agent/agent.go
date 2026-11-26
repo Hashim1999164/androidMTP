@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,54 @@ import (
 )
 
 const label = "com.hashim1999164.androidmtp"
+
+// stableBinary copies a binary out of folders macOS TCC blocks for LaunchAgents
+// (Desktop, Documents, Downloads). Opening those paths from launchd hangs in dyld.
+func stableBinary(abs string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	protected := false
+	for _, dir := range []string{
+		filepath.Join(home, "Desktop"),
+		filepath.Join(home, "Documents"),
+		filepath.Join(home, "Downloads"),
+	} {
+		rel, err := filepath.Rel(dir, abs)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			protected = true
+			break
+		}
+	}
+	if !protected {
+		return abs, nil
+	}
+	dir := filepath.Join(home, "Library", "Application Support", "androidmtp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, "androidmtp")
+	in, err := os.Open(abs)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	_ = exec.Command("xattr", "-d", "com.apple.quarantine", dest).Run()
+	_ = exec.Command("codesign", "--force", "--sign", "-", dest).Run()
+	return dest, nil
+}
 
 // PlistPath returns the LaunchAgent plist path.
 func PlistPath() (string, error) {
@@ -46,6 +95,10 @@ func Install(bin string) error {
 				abs, _ = filepath.Abs(brewBin)
 			}
 		}
+	}
+	abs, err = stableBinary(abs)
+	if err != nil {
+		return err
 	}
 
 	home, err := os.UserHomeDir()

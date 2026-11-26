@@ -116,7 +116,7 @@ func Run(ctx context.Context, opts Options) error {
 		if !opened {
 			failStreak++
 			if failStreak >= 3 && !opts.NoNotify {
-				notify.Banner("androidmtp", "Mount failed — unlock phone, choose File Transfer, unplug/replug")
+				notify.Banner("androidmtp", "Mount failed — unlock the phone, choose File Transfer, and turn on fuse-t under File System Extensions")
 			}
 		} else {
 			failStreak = 0

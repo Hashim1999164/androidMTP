@@ -39,14 +39,14 @@ brew install --cask fuse-t && brew tap hashim1999164/tap && brew install android
 ## How it works
 
 ```
-Phone ──USB MTP──► androidmtp agent ──FUSE-T──► Finder volume
+Phone ──USB MTP──► androidmtp driver ──Apple FSKit──► Finder volume
 ```
 
-A LaunchAgent watches for MTP devices, mounts them, opens Finder, and notifies you.
+The driver is a macOS file system extension (`driver/`). A LaunchAgent watches USB, mounts the phone as a local ejectable volume, and opens Finder. One switch, the first time: System Settings → General → Login Items & Extensions → File System Extensions → **Android MTP**. Until that switch is on, the same local volume is provided through the fuse-t FSKit module.
 
 ## Requirements
 
-- Apple Silicon Mac · macOS 13+
+- Apple Silicon Mac · macOS 15.4+
 - Android in **File Transfer / MTP** mode
 - Data USB cable
 
@@ -60,7 +60,7 @@ Limited: cross-folder moves, some in-place edits, recursive folder delete.
 ```bash
 brew install go libusb pkg-config && brew install --cask fuse-t
 git clone https://github.com/Hashim1999164/androidMTP.git && cd androidMTP
-make build && ./bin/androidmtp enable
+make build && bash driver/build.sh && ./bin/androidmtp enable
 ```
 
 ## Contributing
