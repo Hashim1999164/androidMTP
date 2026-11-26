@@ -17,25 +17,52 @@
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.0</string>
+	<string>0.5.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>15.4</string>
+	<string>27.0</string>
 	<key>EXAppExtensionAttributes</key>
 	<dict>
 		<key>EXExtensionPointIdentifier</key>
 		<string>com.apple.fskit.fsmodule</string>
+		<key>FSActivateOptionSyntax</key>
+		<dict>
+			<key>shortOptions</key>
+			<string>g:m:o:u:</string>
+		</dict>
+		<key>FSCheckOptionSyntax</key>
+		<dict>
+			<key>shortOptions</key>
+			<string>nqy</string>
+		</dict>
+		<key>FSFormatOptionSyntax</key>
+		<dict>
+			<key>shortOptions</key>
+			<string>v</string>
+		</dict>
 		<key>FSShortName</key>
 		<string>androidmtp</string>
 		<key>FSSupportsBlockResources</key>
 		<false/>
+		<key>FSSupportsGenericURLResources</key>
+		<false/>
 		<key>FSSupportsPathURLs</key>
 		<true/>
+		<key>FSSupportsServerURLs</key>
+		<false/>
 		<key>FSRequiresSecurityScopedPathURLResources</key>
 		<true/>
 		<key>FSPersonalities</key>
-		<dict/>
+		<dict>
+			<key>AndroidMTPPersonality</key>
+			<dict>
+				<key>FSName</key>
+				<string>Android MTP</string>
+				<key>FSfileObjectsAreCaseSensitive</key>
+				<true/>
+			</dict>
+		</dict>
 		<key>FSMediaTypes</key>
 		<dict/>
 	</dict>

@@ -69,10 +69,12 @@ func Check() int {
 
 	driverOut, _ := exec.Command("pluginkit", "-m", "-i", "org.hashim.androidmtp.fsmodule").Output()
 	driverLine := strings.TrimSpace(string(driverOut))
-	if strings.HasPrefix(driverLine, "+") || driverLine != "" {
-		check("Android MTP driver", true, "installed — File System Extensions → Android MTP")
-	} else {
+	if !strings.HasPrefix(driverLine, "+") && driverLine == "" {
 		fmt.Printf("[warn] Android MTP driver — not installed yet (bash driver/build.sh)\n")
+	} else if driverDisabled() {
+		fmt.Printf("[warn] Android MTP driver — installed but off. System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → turn on Android MTP\n")
+	} else {
+		check("Android MTP driver", true, "on — the phone mounts as a local volume")
 	}
 
 	libusbOK := false
@@ -164,6 +166,17 @@ func fskitState() fskitStatus {
 		return fskitInstalled
 	}
 	return fskitReady
+}
+
+func driverDisabled() bool {
+	dir, err := os.MkdirTemp("", "androidmtp-driver-")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(dir)
+	probe := exec.Command("mount", "-t", "androidmtp", "/tmp/androidmtp-not-a-session", dir)
+	msg, _ := probe.CombinedOutput()
+	return strings.Contains(string(msg), "is disabled")
 }
 
 func human(n uint64) string {

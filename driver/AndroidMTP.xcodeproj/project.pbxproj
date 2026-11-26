@@ -1,0 +1,387 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B10000000000000000000001 /* AndroidMTPFS.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000001 /* AndroidMTPFS.swift */; };
+		B10000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000002 /* AppDelegate.swift */; };
+		B10000000000000000000003 /* AndroidMTPFS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E10000000000000000000006 /* AndroidMTPFS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		X10000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = P1000000000000000000000A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T10000000000000000000001;
+			remoteInfo = AndroidMTPFS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		P10000000000000000000005 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 16;
+			files = (
+				B10000000000000000000003 /* AndroidMTPFS.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		E10000000000000000000001 /* AndroidMTPFS.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AndroidMTPFS.swift; sourceTree = "<group>"; };
+		E10000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		E10000000000000000000003 /* Info-appex.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-appex.plist"; sourceTree = "<group>"; };
+		E10000000000000000000004 /* fskit.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = fskit.entitlements; sourceTree = "<group>"; };
+		E10000000000000000000005 /* AndroidMTP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AndroidMTP.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E10000000000000000000006 /* AndroidMTPFS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AndroidMTPFS.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		P10000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P10000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				E10000000000000000000001 /* AndroidMTPFS.swift */,
+				G10000000000000000000003 /* App */,
+				E10000000000000000000003 /* Info-appex.plist */,
+				E10000000000000000000004 /* fskit.entitlements */,
+				G10000000000000000000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		G10000000000000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E10000000000000000000005 /* AndroidMTP.app */,
+				E10000000000000000000006 /* AndroidMTPFS.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				E10000000000000000000002 /* AppDelegate.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T10000000000000000000001 /* AndroidMTPFS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L10000000000000000000002 /* Build configuration list for PBXNativeTarget "AndroidMTPFS" */;
+			buildPhases = (
+				P10000000000000000000001 /* Sources */,
+				P10000000000000000000002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AndroidMTPFS;
+			productName = AndroidMTPFS;
+			productReference = E10000000000000000000006 /* AndroidMTPFS.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
+		};
+		T10000000000000000000002 /* AndroidMTP */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L10000000000000000000003 /* Build configuration list for PBXNativeTarget "AndroidMTP" */;
+			buildPhases = (
+				P10000000000000000000003 /* Sources */,
+				P10000000000000000000004 /* Frameworks */,
+				P10000000000000000000006 /* Embed AndroidMTPFS */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D10000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = AndroidMTP;
+			productName = AndroidMTP;
+			productReference = E10000000000000000000005 /* AndroidMTP.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		P1000000000000000000000A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = NO;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					T10000000000000000000001 = {
+						CreatedOnToolsVersion = 26.4;
+					};
+					T10000000000000000000002 = {
+						CreatedOnToolsVersion = 26.4;
+					};
+				};
+			};
+			buildConfigurationList = L10000000000000000000001 /* Build configuration list for PBXProject "AndroidMTP" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = G10000000000000000000001;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = G10000000000000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T10000000000000000000002 /* AndroidMTP */,
+				T10000000000000000000001 /* AndroidMTPFS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		P10000000000000000000006 /* Embed AndroidMTPFS */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed AndroidMTPFS";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Extensions/AndroidMTPFS.appex/Contents/Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nAPPEX=\"${TARGET_BUILD_DIR}/AndroidMTPFS.appex\"\nDEST=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Extensions\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/AndroidMTPFS.appex\"\ncp -R \"$APPEX\" \"$DEST/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		P10000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000001 /* AndroidMTPFS.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P10000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000002 /* AppDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D10000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = T10000000000000000000001 /* AndroidMTPFS */;
+			targetProxy = X10000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = F6NDC687ZQ;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				ARCHS = arm64;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		C10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = F6NDC687ZQ;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C10000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = fskit.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = F6NDC687ZQ;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Info-appex.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp.fsmodule;
+				PRODUCT_NAME = AndroidMTPFS;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		C10000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = fskit.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = F6NDC687ZQ;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Info-appex.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp.fsmodule;
+				PRODUCT_NAME = AndroidMTPFS;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C10000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = app.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = F6NDC687ZQ;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Android MTP";
+				INFOPLIST_KEY_LSMinimumSystemVersion = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp;
+				PRODUCT_NAME = AndroidMTP;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		C10000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = app.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = F6NDC687ZQ;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Android MTP";
+				INFOPLIST_KEY_LSMinimumSystemVersion = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp;
+				PRODUCT_NAME = AndroidMTP;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		L10000000000000000000001 /* Build configuration list for PBXProject "AndroidMTP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000001 /* Debug */,
+				C10000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L10000000000000000000002 /* Build configuration list for PBXNativeTarget "AndroidMTPFS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000003 /* Debug */,
+				C10000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L10000000000000000000003 /* Build configuration list for PBXNativeTarget "AndroidMTP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000005 /* Debug */,
+				C10000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = P1000000000000000000000A /* Project object */;
+}

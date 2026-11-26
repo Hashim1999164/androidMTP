@@ -8,13 +8,38 @@ private final class MTPConnection {
     private let fd: Int32
     private let lock = NSLock()
 
-    init(socketPath: String) throws {
+    init(tcp: String) throws {
+        let parts = tcp.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let port = UInt16(parts[1]) else { throw POSIXError(.EINVAL) }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        if fd < 0 { throw POSIXError(.EIO) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        parts[0].withCString { host in
+            addr.sin_addr.s_addr = inet_addr(host)
+        }
+        let rc = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if rc != 0 {
+            let err = errno
+            close(fd)
+            throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
+        }
+        self.fd = fd
+    }
+
+    init(unixPath: String) throws {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        if fd < 0 { throw POSIXError(.ECONNREFUSED) }
+        if fd < 0 { throw POSIXError(.EIO) }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let max = MemoryLayout.size(ofValue: addr.sun_path) - 1
-        socketPath.withCString { src in
+        unixPath.withCString { src in
             withUnsafeMutablePointer(to: &addr.sun_path) { dst in
                 _ = strncpy(UnsafeMutableRawPointer(dst).assumingMemoryBound(to: CChar.self), src, max)
             }
@@ -25,8 +50,9 @@ private final class MTPConnection {
             }
         }
         if rc != 0 {
+            let err = errno
             close(fd)
-            throw POSIXError(.ECONNREFUSED)
+            throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
         }
         self.fd = fd
     }
@@ -130,10 +156,9 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
     let rpc: MTPConnection
     private var items: [String: MTPItem] = [:]
 
-    init(rpc: MTPConnection, name: String) {
+    init(rpc: MTPConnection, name: String, id: UUID) {
         self.rpc = rpc
-        let id = FSVolume.Identifier(uuid: UUID())
-        super.init(volumeID: id, volumeName: FSFileName(string: name))
+        super.init(volumeID: FSVolume.Identifier(uuid: id), volumeName: FSFileName(string: name))
     }
 
     var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
@@ -184,7 +209,9 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
     }
 
     func reclaimItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
-        _ = item.tryReclaim {}
+        if #available(macOS 27.0, *) {
+            _ = item.tryReclaim {}
+        }
         if let mtp = item as? MTPItem {
             items.removeValue(forKey: mtp.path)
         }
@@ -453,12 +480,13 @@ final class AndroidMTPFS: FSUnaryFileSystem, FSUnaryFileSystemOperations {
             return
         }
         let fields = sessionFields(pathResource.url)
-        guard fields["socket"] != nil else {
+        guard fields["tcp"] != nil || fields["socket"] != nil else {
             reply(.notRecognized, nil)
             return
         }
         let name = fields["volume"] ?? "Android"
-        reply(.recognized(name: name, containerID: FSContainerIdentifier(uuid: UUID())), nil)
+        let id = UUID(uuidString: fields["id"] ?? "") ?? UUID()
+        reply(.recognized(name: name, containerID: FSContainerIdentifier(uuid: id)), nil)
     }
 
     func loadResource(resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping (FSVolume?, (any Error)?) -> Void) {
@@ -467,13 +495,19 @@ final class AndroidMTPFS: FSUnaryFileSystem, FSUnaryFileSystemOperations {
             return
         }
         let fields = sessionFields(pathResource.url)
-        guard let socketPath = fields["socket"] else {
-            reply(nil, POSIXError(.EINVAL))
-            return
-        }
         do {
-            let rpc = try MTPConnection(socketPath: socketPath)
-            let volume = MTPVolume(rpc: rpc, name: fields["volume"] ?? "Android")
+            let rpc: MTPConnection
+            if let tcp = fields["tcp"] {
+                rpc = try MTPConnection(tcp: tcp)
+            } else if let socketPath = fields["socket"] {
+                rpc = try MTPConnection(unixPath: socketPath)
+            } else {
+                reply(nil, POSIXError(.EINVAL))
+                return
+            }
+            let id = UUID(uuidString: fields["id"] ?? "") ?? UUID()
+            let volume = MTPVolume(rpc: rpc, name: fields["volume"] ?? "Android", id: id)
+            containerStatus = .ready
             reply(volume, nil)
         } catch {
             reply(nil, error)

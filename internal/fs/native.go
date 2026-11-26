@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -35,13 +36,12 @@ const (
 
 const nativeModuleID = "org.hashim.androidmtp.fsmodule"
 
-// GroupSocketDir is where the FSKit extension is allowed to connect.
-func GroupSocketDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "Library", "Group Containers", "F6NDC687ZQ.org.hashim.androidmtp", "s"), nil
+func newContainerID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // NativeModuleRegistered reports whether the Android MTP FSKit driver is installed.
@@ -59,26 +59,18 @@ func MountNative(fsys *FS, mountpoint, volname string) error {
 	if !NativeModuleRegistered() {
 		return fmt.Errorf("android MTP file system driver is not installed")
 	}
-	dir, err := GroupSocketDir()
-	if err != nil || os.MkdirAll(dir, 0o755) != nil {
-		dir = filepath.Join(os.TempDir(), "androidmtp-sockets")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-	id := fmt.Sprintf("%d", time.Now().UnixNano())
-	sockPath := filepath.Join(dir, id+".sock")
-	_ = os.Remove(sockPath)
-	ln, err := net.Listen("unix", sockPath)
+	// The file-system extension is sandboxed. It can open a TCP port on
+	// localhost, which is how the volume reaches this process.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
-	defer os.Remove(sockPath)
 	go serveNative(ln, fsys)
 
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	session := filepath.Join(os.TempDir(), "androidmtp-"+id+".session")
-	body := "socket=" + sockPath + "\nvolume=" + strings.ReplaceAll(volname, "\n", " ") + "\n"
+	body := "tcp=" + ln.Addr().String() + "\nid=" + newContainerID() + "\nvolume=" + strings.ReplaceAll(volname, "\n", " ") + "\n"
 	if err := os.WriteFile(session, []byte(body), 0o644); err != nil {
 		return err
 	}
