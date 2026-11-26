@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install dependencies
+        run: |
+          brew install libusb pkg-config
+          brew install --cask fuse-t
+
+      - name: Build
+        run: make build
+
+      - name: Doctor (no device expected)
+        run: ./bin/androidmtp doctor || true
+
+      - name: Upload binary
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: androidmtp-darwin-arm64
+          path: bin/androidmtp
+
+  release-assets:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: |
+          brew install libusb pkg-config
+          brew install --cask fuse-t
+          make release VERSION=${{ github.event.release.tag_name }}
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/androidmtp-darwin-arm64 \
+            dist/androidmtp-darwin-arm64.sha256 \
+            --clobber

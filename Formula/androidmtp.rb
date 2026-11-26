@@ -1,0 +1,36 @@
+class Androidmtp < Formula
+  desc "Mount Android MTP devices as Finder volumes on Apple Silicon"
+  homepage "https://github.com/Hashim1999164/androidMTP"
+  url "https://github.com/Hashim1999164/androidMTP/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "REPLACE_ON_RELEASE"
+  license "MIT"
+  head "https://github.com/Hashim1999164/androidMTP.git", branch: "main"
+
+  depends_on "go" => :build
+  depends_on "pkg-config" => :build
+  depends_on "libusb"
+  depends_on "fuse-t" => :recommended
+
+  def install
+    ENV["CGO_ENABLED"] = "1"
+    system "make", "build", "VERSION=#{version}"
+    bin.install "bin/androidmtp"
+  end
+
+  def caveats
+    <<~EOS
+      FUSE-T is required for Finder volumes (no kernel extension):
+
+        brew install --cask fuse-t
+
+      Then:
+
+        androidmtp doctor
+        androidmtp mount
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/androidmtp --version")
+  end
+end

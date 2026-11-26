@@ -1,0 +1,15 @@
+androidMTP
+Copyright (c) 2026 Hashim Khan
+
+This product includes software developed elsewhere:
+
+=== go-mtpfs (BSD) ===
+Copyright (c) 2012 Google Inc.
+https://github.com/hanwen/go-mtpfs
+
+=== cgofuse (MIT) ===
+Copyright 2017-2022 Bill Zissimopoulos
+https://github.com/winfsp/cgofuse
+
+The copy under third_party/cgofuse includes a small Darwin-only change to
+dlopen user-local FUSE-T library paths in addition to /usr/local/lib.
