@@ -26,8 +26,29 @@ if [[ -x /opt/homebrew/bin/brew ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 
-echo "==> installing FUSE-T (Finder volumes, no kernel extension)"
-brew install --cask fuse-t
+echo "==> installing FUSE-T (Apple FSKit local volume — not a network drive)"
+if ! brew install --cask fuse-t; then
+  echo "==> cask needs an admin password; installing the signed FSKit app for this user"
+fi
+APP="$HOME/Applications/fuse-t.app"
+if [[ ! -d "$APP" ]]; then
+  PKG="$(ls -t "$HOME/Library/Caches/Homebrew/downloads/"*fuse-t*.pkg 2>/dev/null | head -1 || true)"
+  if [[ -n "${PKG}" ]]; then
+    rm -rf /tmp/androidmtp-fuset
+    pkgutil --expand-full "$PKG" /tmp/androidmtp-fuset
+    FOUND="$(find /tmp/androidmtp-fuset -name 'fuse-t.app' -type d | head -1)"
+    if [[ -n "${FOUND}" ]]; then
+      mkdir -p "$HOME/Applications"
+      rm -rf "$APP"
+      cp -R "$FOUND" "$APP"
+    fi
+  fi
+fi
+if [[ -d "$APP/Contents/Extensions/FskitSrvModule.appex" ]]; then
+  pluginkit -a "$APP/Contents/Extensions/FskitSrvModule.appex" || true
+  pluginkit -e use -i org.fuset.fskit-srv.module || true
+  echo "==> Apple FSKit module enabled (local volume, not Network)"
+fi
 
 echo "==> installing libusb"
 brew install libusb

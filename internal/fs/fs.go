@@ -788,10 +788,10 @@ func Mount(fsys *FS, mountpoint string, volname string, allowOther bool) error {
 }
 
 func preferredBackends() []string {
-	// NFS = slow and appears under Network (localhost).
-	// SMB is much faster. FSKit (when enabled) feels closest to a local disk.
+	// FSKit is Apple's in-kernel filesystem API (local volume, not Network).
+	// SMB/NFS are only fallbacks if the FSKit module is not enabled yet.
 	if runtime.GOOS == "darwin" {
-		return []string{"smb", "fskit", "nfs"}
+		return []string{"fskit", "smb", "nfs"}
 	}
 	return []string{"nfs"}
 }

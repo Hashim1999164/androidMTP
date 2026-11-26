@@ -58,6 +58,17 @@ func Check() int {
 	}
 	check("FUSE-T", fuseOK, fuseDetail+"  (brew install --cask fuse-t)")
 
+	fskitOut, _ := exec.Command("pluginkit", "-m", "-i", "org.fuset.fskit-srv.module").Output()
+	fskitLine := strings.TrimSpace(string(fskitOut))
+	fskitOn := strings.HasPrefix(fskitLine, "+")
+	if fskitOn {
+		check("FSKit (local volume)", true, "enabled — mounts as a local filesystem, not Network")
+	} else if fskitLine != "" {
+		fmt.Printf("[warn] FSKit — installed but not enabled. Run: pluginkit -e use -i org.fuset.fskit-srv.module\n")
+	} else {
+		fmt.Printf("[warn] FSKit — module not registered yet (install.sh enables it)\n")
+	}
+
 	libusbOK := false
 	libusbDetail := "libusb not found"
 	for _, p := range []string{
