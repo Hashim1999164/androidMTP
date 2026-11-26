@@ -1,6 +1,6 @@
 module github.com/Hashim1999164/androidMTP
 
-go 1.27.4
+go 1.22
 
 require (
 	github.com/hanwen/go-mtpfs v1.0.1
