@@ -1,6 +1,7 @@
 package mount
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,6 +71,35 @@ func ensureMountDir(path string) error {
 	return os.MkdirAll(path, 0o755)
 }
 
+// RemoveIdleMountPoint deletes a mount folder that is no longer mounted.
+// Call it only after Finder has already dropped the disk. Deleting the
+// folder while Finder still shows the icon leaves that icon stuck.
+func RemoveIdleMountPoint(path string) {
+	if path == "" {
+		return
+	}
+	base := filepath.Base(path)
+	if base == "" || base == "." || base == "/" || base == "Volumes" || base == "AndroidMTP" {
+		return
+	}
+	if ok, _ := IsMounted(path); ok {
+		return
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".DS_Store" || strings.HasPrefix(name, "._") {
+			_ = os.Remove(filepath.Join(path, name))
+			continue
+		}
+		return
+	}
+	_ = os.Remove(path)
+}
+
 // IsMounted reports whether path is an active mount.
 func IsMounted(path string) (bool, error) {
 	out, err := exec.Command("mount").Output()
@@ -77,6 +107,52 @@ func IsMounted(path string) (bool, error) {
 		return false, err
 	}
 	return strings.Contains(string(out), " on "+path+" ("), nil
+}
+
+// ReleaseDesktop waits until Finder has dropped the phone, then deletes the
+// empty mount folder. The folder has to stay until Finder lets go; removing
+// it sooner leaves the Desktop icon behind with no disk under it.
+func ReleaseDesktop(path, name string) {
+	if path == "" || !idlePathAllowed(path) {
+		return
+	}
+	if ok, _ := IsMounted(path); ok {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		listed, ok := finderVolumeNames()
+		if ok && !strings.Contains(listed, name) {
+			RemoveIdleMountPoint(path)
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			_ = os.Mkdir(path, 0o755)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func idlePathAllowed(path string) bool {
+	base := filepath.Base(path)
+	return base != "" && base != "." && base != "/" && base != "Volumes" && base != "AndroidMTP"
+}
+
+func finderVolumeNames() (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "osascript", "-e", `tell application "Finder" to get (name of every disk as string) & linefeed & (name of every item of desktop as string)`).Output()
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
 }
 
 // Unmount forcibly unmounts a path using diskutil then umount.
@@ -184,6 +260,9 @@ func Eject() error {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	for _, st := range all {
+		ReleaseDesktop(st.MountPoint, st.VolumeName)
 	}
 	_ = status.Clear()
 	for _, st := range all {

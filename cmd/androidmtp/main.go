@@ -30,7 +30,8 @@ ejectable disk in Finder and on the Desktop. No kernel extension.
 Plug and play (default after install):
   1. Install once
   2. Plug in Android → choose File Transfer / MTP
-  3. Phone appears in Finder automatically
+  3. Phone appears in Finder and on the Desktop
+  4. Unplug and both go away
 
 Manual:
   androidmtp mount

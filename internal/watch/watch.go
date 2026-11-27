@@ -71,7 +71,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 
 		bus, busOK := usbRegistry()
-		if busOK && bus == lastBus && mountedAndAlive(slots) && allOnBus(slots, bus) {
+		if busOK && bus == lastBus && (len(slots) == 0 || (mountedAndAlive(slots) && allOnBus(slots, bus))) {
 			sleep(ctx, 300*time.Millisecond)
 			continue
 		}
@@ -244,16 +244,49 @@ func waitMounted(ctx context.Context, d time.Duration, pid int) bool {
 }
 
 func hidePhone(pid int) {
+	type vol struct {
+		path string
+		name string
+	}
+	var vols []vol
+	var paths []string
+	for _, st := range status.List() {
+		if pid == 0 || st.PID == pid {
+			if st.MountPoint == "" {
+				continue
+			}
+			vols = append(vols, vol{path: st.MountPoint, name: st.VolumeName})
+			paths = append(paths, st.MountPoint)
+		}
+	}
 	before := androidmtpMounts()
 	stopMount(pid)
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if before == 0 || androidmtpMounts() < before {
-			return
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	dropExtension()
+	if pathMounted(paths) {
+		dropExtension()
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && pathMounted(paths) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, v := range vols {
+		mount.ReleaseDesktop(v.path, v.name)
+	}
+}
+
+func pathMounted(paths []string) bool {
+	for _, p := range paths {
+		if ok, _ := mount.IsMounted(p); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func allOnBus(slots map[string]*slot, bus string) bool {
