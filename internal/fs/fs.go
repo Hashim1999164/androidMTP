@@ -4,16 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"os"
 	"path"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/hanwen/go-mtpfs/mtp"
-	"github.com/winfsp/cgofuse/fuse"
 )
 
 const (
@@ -22,6 +19,26 @@ const (
 	rootIno      = 1
 	storageShift = 33
 )
+
+const (
+	modeDir uint32 = 0x4000
+	modeReg uint32 = 0x8000
+)
+
+// Stat is the file metadata the Finder driver asks for.
+type Stat struct {
+	Ino   uint64
+	Mode  uint32
+	Size  int64
+	Mtime int64
+}
+
+// Statfs is the volume size the Finder driver asks for.
+type Statfs struct {
+	Bsize  uint64
+	Blocks uint64
+	Bavail uint64
+}
 
 // Options configure the MTP filesystem.
 type Options struct {
@@ -60,9 +77,8 @@ type openFile struct {
 	editing bool
 }
 
-// FS exposes an MTP device through cgofuse (FUSE-T on macOS).
+// FS exposes an MTP device to the Android MTP file system driver.
 type FS struct {
-	fuse.FileSystemBase
 	dev     *mtp.Device
 	sids    []uint32
 	opts    Options
@@ -133,7 +149,7 @@ func (fs *FS) Init() {
 
 func (fs *FS) Destroy() {}
 
-func (fs *FS) Statfs(path string, stat *fuse.Statfs_t) int {
+func (fs *FS) Statfs(path string, stat *Statfs) int {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	var total, free uint64
@@ -146,18 +162,15 @@ func (fs *FS) Statfs(path string, stat *fuse.Statfs_t) int {
 		free += info.FreeSpaceInBytes
 	}
 	stat.Bsize = blockSize
-	stat.Frsize = blockSize
 	if total == 0 {
 		total = blockSize
 	}
 	stat.Blocks = total / blockSize
-	stat.Bfree = free / blockSize
 	stat.Bavail = free / blockSize
-	stat.Namemax = 255
 	return 0
 }
 
-func (fs *FS) Getattr(p string, stat *fuse.Stat_t, fh uint64) int {
+func (fs *FS) Getattr(p string, stat *Stat, fh uint64) int {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	n, errc := fs.resolveLocked(p)
@@ -168,24 +181,14 @@ func (fs *FS) Getattr(p string, stat *fuse.Stat_t, fh uint64) int {
 	return 0
 }
 
-func (fs *FS) fillStat(n *node, stat *fuse.Stat_t) {
+func (fs *FS) fillStat(n *node, stat *Stat) {
 	stat.Ino = n.ino
-	stat.Nlink = 1
-	stat.Uid = fs.uid
-	stat.Gid = fs.gid
-	stat.Blksize = blockSize
-	ts := fuse.NewTimespec(n.mtime)
-	stat.Atim = ts
-	stat.Mtim = ts
-	stat.Ctim = ts
-	stat.Birthtim = ts
+	stat.Mtime = n.mtime.Unix()
 	if n.isDir {
-		stat.Mode = fuse.S_IFDIR | 0755
-		stat.Nlink = 2
+		stat.Mode = modeDir | 0755
 	} else {
-		stat.Mode = fuse.S_IFREG | 0644
+		stat.Mode = modeReg | 0644
 		stat.Size = n.size
-		stat.Blocks = (n.size + blockSize - 1) / blockSize
 	}
 }
 
@@ -197,7 +200,7 @@ func (fs *FS) Opendir(p string) (int, uint64) {
 		return errc, ^uint64(0)
 	}
 	if !n.isDir {
-		return -fuse.ENOTDIR, ^uint64(0)
+		return -int(syscall.ENOTDIR), ^uint64(0)
 	}
 	// Warm directory cache once on open — Finder then hits cache for readdir/getattr storms.
 	if _, errc := fs.ensureFetchedLocked(p, n); errc != 0 {
@@ -217,7 +220,7 @@ func (fs *FS) Releasedir(p string, fh uint64) int {
 }
 
 func (fs *FS) Readdir(p string,
-	fill func(name string, stat *fuse.Stat_t, ofst int64) bool,
+	fill func(name string, stat *Stat, ofst int64) bool,
 	ofst int64,
 	fh uint64) int {
 	fs.mu.Lock()
@@ -227,7 +230,7 @@ func (fs *FS) Readdir(p string,
 		return errc
 	}
 	if !n.isDir {
-		return -fuse.ENOTDIR
+		return -int(syscall.ENOTDIR)
 	}
 	children, errc := fs.ensureFetchedLocked(p, n)
 	if errc != 0 {
@@ -236,7 +239,10 @@ func (fs *FS) Readdir(p string,
 	fill(".", nil, 0)
 	fill("..", nil, 0)
 	for _, ch := range children {
-		st := fuse.Stat_t{}
+		if strings.HasPrefix(ch.name, ".") {
+			continue
+		}
+		st := Stat{}
 		fs.fillStat(ch, &st)
 		if !fill(ch.name, &st, 0) {
 			break
@@ -253,16 +259,13 @@ func (fs *FS) Open(p string, flags int) (int, uint64) {
 		return errc, ^uint64(0)
 	}
 	if n.isDir {
-		return -fuse.EISDIR, ^uint64(0)
+		return -int(syscall.EISDIR), ^uint64(0)
 	}
 	fs.nextFH++
 	fh := fs.nextFH
-	of := &openFile{path: p, node: n, android: fs.android}
-	if flags&fuse.O_WRONLY != 0 || flags&fuse.O_RDWR != 0 || flags&fuse.O_APPEND != 0 {
-		of.buf = &bytes.Buffer{}
-		of.dirty = true
-	}
-	fs.opens[fh] = of
+	// A writable open is not a write. Finder opens files while drawing icons,
+	// and marking the handle dirty here deleted the phone file on close.
+	fs.opens[fh] = &openFile{path: p, node: n, android: fs.android}
 	return 0, fh
 }
 
@@ -276,7 +279,7 @@ func (fs *FS) Create(p string, flags int, mode uint32) (int, uint64) {
 		return errc, ^uint64(0)
 	}
 	if !parent.isDir || parent.kind == kindRoot {
-		return -fuse.EPERM, ^uint64(0)
+		return -int(syscall.EPERM), ^uint64(0)
 	}
 	info := mtp.ObjectInfo{
 		StorageID:        parent.storage,
@@ -298,7 +301,7 @@ func (fs *FS) Create(p string, flags int, mode uint32) (int, uint64) {
 		_, _, handle, err := fs.dev.SendObjectInfo(parent.storage, parent.handle, &info)
 		if err != nil {
 			log.Printf("SendObjectInfo: %v", err)
-			return -fuse.EIO, ^uint64(0)
+			return -int(syscall.EIO), ^uint64(0)
 		}
 		if err := fs.dev.SendObject(bytes.NewReader(nil), 0); err != nil {
 			_ = fs.dev.DeleteObject(handle)
@@ -329,7 +332,7 @@ func (fs *FS) Release(p string, fh uint64) int {
 		_ = fs.dev.AndroidEndEditObject(of.node.handle)
 		of.editing = false
 	}
-	if !of.dirty || of.buf == nil {
+	if !of.dirty || of.buf == nil || of.buf.Len() == 0 {
 		return 0
 	}
 	return fs.flushWriteLocked(of)
@@ -340,7 +343,7 @@ func (fs *FS) flushWriteLocked(of *openFile) int {
 	n := of.node
 	parent, ok := fs.nodes[n.parent]
 	if !ok {
-		return -fuse.EIO
+		return -int(syscall.EIO)
 	}
 	if n.handle != 0 {
 		_ = fs.dev.DeleteObject(n.handle)
@@ -360,11 +363,11 @@ func (fs *FS) flushWriteLocked(of *openFile) int {
 	_, _, handle, err := fs.dev.SendObjectInfo(n.storage, parent.handle, &info)
 	if err != nil {
 		log.Printf("SendObjectInfo flush: %v", err)
-		return -fuse.EIO
+		return -int(syscall.EIO)
 	}
 	if err := fs.dev.SendObject(bytes.NewReader(data), int64(len(data))); err != nil {
 		log.Printf("SendObject flush: %v", err)
-		return -fuse.EIO
+		return -int(syscall.EIO)
 	}
 	n.handle = handle
 	n.size = int64(len(data))
@@ -426,7 +429,7 @@ func (fs *FS) Read(p string, buf []byte, off int64, fh uint64) int {
 	}
 	if err != nil {
 		log.Printf("read %s: %v", p, err)
-		return -fuse.EIO
+		return -int(syscall.EIO)
 	}
 	return copy(buf, b.Bytes())
 }
@@ -436,7 +439,7 @@ func (fs *FS) Write(p string, buf []byte, off int64, fh uint64) int {
 	defer fs.mu.Unlock()
 	of := fs.opens[fh]
 	if of == nil {
-		return -fuse.EBADF
+		return -int(syscall.EBADF)
 	}
 	n := of.node
 
@@ -444,13 +447,13 @@ func (fs *FS) Write(p string, buf []byte, off int64, fh uint64) int {
 		if !of.editing {
 			if err := fs.dev.AndroidBeginEditObject(n.handle); err != nil {
 				log.Printf("BeginEdit: %v", err)
-				return -fuse.EIO
+				return -int(syscall.EIO)
 			}
 			of.editing = true
 		}
 		if err := fs.dev.AndroidSendPartialObject(n.handle, off, uint32(len(buf)), bytes.NewReader(buf)); err != nil {
 			log.Printf("SendPartial: %v", err)
-			return -fuse.EIO
+			return -int(syscall.EIO)
 		}
 		if off+int64(len(buf)) > n.size {
 			n.size = off + int64(len(buf))
@@ -486,11 +489,11 @@ func (fs *FS) Truncate(p string, size int64, fh uint64) int {
 	}
 	if fs.android && n.handle != 0 {
 		if err := fs.dev.AndroidBeginEditObject(n.handle); err != nil {
-			return -fuse.EIO
+			return -int(syscall.EIO)
 		}
 		if err := fs.dev.AndroidTruncate(n.handle, size); err != nil {
 			_ = fs.dev.AndroidEndEditObject(n.handle)
-			return -fuse.EIO
+			return -int(syscall.EIO)
 		}
 		_ = fs.dev.AndroidEndEditObject(n.handle)
 		n.size = size
@@ -522,7 +525,7 @@ func (fs *FS) Mkdir(p string, mode uint32) int {
 		return errc
 	}
 	if parent.kind == kindRoot {
-		return -fuse.EPERM
+		return -int(syscall.EPERM)
 	}
 	info := mtp.ObjectInfo{
 		StorageID:        parent.storage,
@@ -535,7 +538,7 @@ func (fs *FS) Mkdir(p string, mode uint32) int {
 	_, _, handle, err := fs.dev.SendObjectInfo(parent.storage, parent.handle, &info)
 	if err != nil {
 		log.Printf("mkdir SendObjectInfo: %v", err)
-		return -fuse.EIO
+		return -int(syscall.EIO)
 	}
 	_ = fs.dev.SendObject(bytes.NewReader(nil), 0)
 	fs.nodes[p] = &node{
@@ -560,13 +563,13 @@ func (fs *FS) Unlink(p string) int {
 		return errc
 	}
 	if n.isDir {
-		return -fuse.EISDIR
+		return -int(syscall.EISDIR)
 	}
 	parent := n.parent
 	if n.handle != 0 {
 		if err := fs.dev.DeleteObject(n.handle); err != nil {
 			log.Printf("DeleteObject: %v", err)
-			return -fuse.EIO
+			return -int(syscall.EIO)
 		}
 	}
 	delete(fs.nodes, p)
@@ -582,18 +585,18 @@ func (fs *FS) Rmdir(p string) int {
 		return errc
 	}
 	if !n.isDir || n.kind == kindRoot || n.kind == kindStorage {
-		return -fuse.EPERM
+		return -int(syscall.EPERM)
 	}
 	children, errc := fs.ensureFetchedLocked(p, n)
 	if errc != 0 {
 		return errc
 	}
 	if len(children) > 0 {
-		return -fuse.ENOTEMPTY
+		return -int(syscall.ENOTEMPTY)
 	}
 	parent := n.parent
 	if err := fs.dev.DeleteObject(n.handle); err != nil {
-		return -fuse.EIO
+		return -int(syscall.EIO)
 	}
 	delete(fs.nodes, p)
 	fs.invalidateDirLocked(parent)
@@ -608,14 +611,14 @@ func (fs *FS) Rename(oldpath string, newpath string) int {
 		return errc
 	}
 	if path.Dir(oldpath) != path.Dir(newpath) {
-		return -fuse.EXDEV
+		return -int(syscall.EXDEV)
 	}
 	newName := path.Base(newpath)
 	if n.handle != 0 {
 		v := mtp.StringValue{Value: newName}
 		if err := fs.dev.SetObjectPropValue(n.handle, mtp.OPC_ObjectFileName, &v); err != nil {
 			log.Printf("rename: %v", err)
-			return -fuse.EIO
+			return -int(syscall.EIO)
 		}
 	}
 	parent := n.parent
@@ -667,7 +670,7 @@ func (fs *FS) fetchChildrenLocked(p string, n *node) ([]*node, int) {
 	handles := mtp.Uint32Array{}
 	if err := fs.dev.GetObjectHandles(n.storage, 0x0, n.handle, &handles); err != nil {
 		log.Printf("GetObjectHandles: %v", err)
-		return nil, -fuse.EIO
+		return nil, -int(syscall.EIO)
 	}
 
 	// Drop previous children of this directory only.
@@ -741,64 +744,10 @@ func (fs *FS) resolveLocked(p string) (*node, int) {
 		next := path.Join(cur, part)
 		found := fs.nodes[next]
 		if found == nil {
-			return nil, -fuse.ENOENT
+			return nil, -int(syscall.ENOENT)
 		}
 		cur = next
 		curNode = found
 	}
 	return curNode, 0
-}
-
-// Mount starts the FUSE-T host and blocks until unmount.
-// On macOS the only backend is Apple FSKit, so the phone is a local volume.
-func Mount(fsys *FS, mountpoint string, volname string, allowOther bool) error {
-	pathEnv := os.Getenv("PATH")
-	extra := []string{
-		"/usr/local/bin",
-		filepathJoinHome(".fuse-t/usr/local/bin"),
-		"/Library/Application Support/fuse-t/bin",
-	}
-	os.Setenv("PATH", strings.Join(append(extra, pathEnv), string(os.PathListSeparator)))
-
-	backends := preferredBackends()
-	var lastErr string
-	for _, backend := range backends {
-		host := fuse.NewFileSystemHost(fsys)
-		opts := []string{
-			"-o", "fsname=androidmtp",
-			"-o", "volname=" + volname,
-			"-o", "local",
-			"-o", "noappledouble",
-			"-o", "noapplexattr",
-			"-o", "rwsize=131072",
-			"-o", "backend=" + backend,
-			"-s",
-		}
-		if allowOther {
-			opts = append(opts, "-o", "allow_other")
-		}
-		log.Printf("mounting with FUSE-T backend=%s at %s", backend, mountpoint)
-		if host.Mount(mountpoint, opts) {
-			return nil
-		}
-		lastErr = backend
-		log.Printf("backend %s failed", backend)
-	}
-	return fmt.Errorf("local FSKit mount failed (tried %v, last=%s) — System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → turn on fuse-t", backends, lastErr)
-}
-
-func preferredBackends() []string {
-	// FSKit only. SMB and NFS show up under Network, which is not a phone volume.
-	if runtime.GOOS == "darwin" {
-		return []string{"fskit"}
-	}
-	return []string{"nfs"}
-}
-
-func filepathJoinHome(rel string) string {
-	h, err := os.UserHomeDir()
-	if err != nil {
-		return rel
-	}
-	return path.Join(h, rel)
 }

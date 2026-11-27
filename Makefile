@@ -4,20 +4,6 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 
-# Prefer explicit CGO_* from the environment / brew formula. Fall back to pkg-config.
-FUSE_PKG ?= $(HOME)/.fuse-t/usr/local/lib/pkgconfig
-PKG_CONFIG_PATH ?= $(FUSE_PKG):/usr/local/lib/pkgconfig:$(PKG_CONFIG_PATH)
-export PKG_CONFIG_PATH
-
-ifeq ($(origin CGO_CFLAGS), undefined)
-  CGO_CFLAGS := $(shell pkg-config --cflags fuse 2>/dev/null)
-endif
-ifeq ($(origin CGO_LDFLAGS), undefined)
-  CGO_LDFLAGS := $(shell pkg-config --libs fuse 2>/dev/null)
-endif
-export CGO_CFLAGS
-export CGO_LDFLAGS
-
 LDFLAGS := -ldflags "-X $(MODULE)/internal/version.Version=$(VERSION)"
 
 .PHONY: all build install uninstall test tidy doctor clean release
@@ -25,7 +11,7 @@ LDFLAGS := -ldflags "-X $(MODULE)/internal/version.Version=$(VERSION)"
 all: build
 
 build:
-	go build -buildvcs=false $(LDFLAGS) -o bin/$(APP) ./cmd/androidmtp
+	CGO_ENABLED=1 go build -buildvcs=false $(LDFLAGS) -o bin/$(APP) ./cmd/androidmtp
 
 install: build
 	install -d $(BINDIR)

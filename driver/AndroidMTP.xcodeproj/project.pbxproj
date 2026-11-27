@@ -273,7 +273,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 0.5.1;
+				MARKETING_VERSION = 0.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp.fsmodule;
 				PRODUCT_NAME = AndroidMTPFS;
 				SKIP_INSTALL = YES;
@@ -297,7 +297,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 0.5.1;
+				MARKETING_VERSION = 0.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp.fsmodule;
 				PRODUCT_NAME = AndroidMTPFS;
 				SKIP_INSTALL = YES;
@@ -321,7 +321,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 0.5.1;
+				MARKETING_VERSION = 0.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp;
 				PRODUCT_NAME = AndroidMTP;
 				SWIFT_VERSION = 5.0;
@@ -344,7 +344,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
-				MARKETING_VERSION = 0.5.1;
+				MARKETING_VERSION = 0.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.hashim.androidmtp;
 				PRODUCT_NAME = AndroidMTP;
 				SWIFT_VERSION = 5.0;

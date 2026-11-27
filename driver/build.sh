@@ -24,6 +24,9 @@ if [[ -x "${XCODE}/usr/bin/xcodebuild" ]]; then
   BUILT="${DERIVED}/Build/Products/Release/AndroidMTP.app"
   LS="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
   "$LS" -u "${BUILT}" || true
+  find "${HOME}/Library/Developer/Xcode/DerivedData" -name 'AndroidMTP.app' -type d -print0 2>/dev/null | while IFS= read -r -d '' stale; do
+    "$LS" -u "${stale}" || true
+  done
   rm -rf "${APP}"
   cp -R "${BUILT}" "${APP}"
   "$LS" -f -R -trusted "${APP}" || true

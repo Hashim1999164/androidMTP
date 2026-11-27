@@ -117,9 +117,10 @@ func Install(bin string) error {
 	pathEnv := strings.Join([]string{
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
-		filepath.Join(home, ".fuse-t/usr/local/bin"),
 		"/usr/bin",
 		"/bin",
+		"/usr/sbin",
+		"/sbin",
 	}, ":")
 
 	const tmpl = `<?xml version="1.0" encoding="UTF-8"?>

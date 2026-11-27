@@ -2,6 +2,7 @@ package device
 
 import (
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +19,10 @@ type Info struct {
 	Product      string
 	Serial       string
 	Model        string
+	VendorID     uint16
+	ProductID    uint16
+	Bus          uint8
+	Address      uint8
 	Storages     []Storage
 }
 
@@ -30,28 +35,125 @@ type Storage struct {
 	TotalBytes  uint64
 }
 
-// ProbeConnected is a light USB check for the plug-and-play watcher.
-// It does not start an MTP session, and it ignores Apple devices such as iPhone.
+// Key identifies one phone across replugs. The USB serial is stable. Phones
+// that do not report a serial fall back to vendor, product, and name.
+func (info Info) Key() string {
+	if s := strings.TrimSpace(info.Serial); s != "" {
+		return s
+	}
+	if info.VendorID != 0 || info.ProductID != 0 {
+		return fmt.Sprintf("%04x:%04x:%s", info.VendorID, info.ProductID, info.Product)
+	}
+	if info.ID != "" {
+		return info.ID
+	}
+	return fmt.Sprintf("index-%d", info.Index)
+}
+
+// OnBus reports whether this phone is still attached. IORegistry updates when
+// the cable moves, even while an MTP session has the device open. A failed
+// registry read is treated as still attached so a glitch cannot hide the disk.
+func OnBus(info Info) bool {
+	out, err := exec.Command("ioreg", "-p", "IOUSB", "-w", "0", "-l").Output()
+	if err != nil {
+		return true
+	}
+	text := string(out)
+	if serial := strings.TrimSpace(info.Serial); serial != "" {
+		return strings.Contains(text, `"USB Serial Number" = "`+serial+`"`)
+	}
+	if info.VendorID != 0 {
+		wantVendor := fmt.Sprintf(`"idVendor" = %d`, info.VendorID)
+		wantProduct := fmt.Sprintf(`"idProduct" = %d`, info.ProductID)
+		for _, block := range strings.Split(text, "+-o ") {
+			if strings.Contains(block, wantVendor) && strings.Contains(block, wantProduct) {
+				return true
+			}
+		}
+		return false
+	}
+	if info.Product != "" {
+		return strings.Contains(text, `"USB Product Name" = "`+info.Product+`"`)
+	}
+	return false
+}
+
+// Find locates a phone by vendor and product id without opening it.
+// A replug keeps the same ids and gets a new USB address. ok is false when
+// the bus could not be read.
+func Find(vendor, product uint16) (bus, addr uint8, found, ok bool) {
+	if vendor == 0 && product == 0 {
+		return 0, 0, false, false
+	}
+	c := usb.NewContext()
+	defer c.Exit()
+	list, err := c.GetDeviceList()
+	if err != nil {
+		return 0, 0, false, false
+	}
+	if len(list) == 0 {
+		return 0, 0, false, true
+	}
+	defer list.Done()
+	for _, dev := range list {
+		dd, err := dev.GetDeviceDescriptor()
+		if err != nil {
+			continue
+		}
+		if dd.IdVendor == vendor && dd.IdProduct == product {
+			return dev.GetBusNumber(), dev.GetDeviceAddress(), true, true
+		}
+	}
+	return 0, 0, false, true
+}
+
+// ProbeConnected finds every Android that is in File Transfer mode.
+// A USB gadget with the same three endpoints (a hub, a LAN adapter, a
+// keyboard) is ignored unless it answers the MTP handshake. The check is
+// the protocol, not a list of brands.
 func ProbeConnected(filter string) ([]Info, error) {
 	c := usb.NewContext()
-	list, err := c.GetDeviceList()
+	raw, err := mtp.FindDevices(c)
 	if err != nil {
 		return nil, err
 	}
-	if len(list) > 0 {
-		defer list.Done()
-	}
-
 	re, err := regexp.Compile(filter)
 	if err != nil {
+		for _, d := range raw {
+			d.Done()
+		}
 		return nil, err
 	}
 
 	var out []Info
-	for _, dev := range list {
-		info, ok := androidMTPInfo(dev)
-		if !ok {
+	for _, d := range raw {
+		if err := d.Open(); err != nil {
+			d.Done()
 			continue
+		}
+		manufacturer, product, serial := d.Identity()
+		_ = d.Close()
+		d.Done()
+		if manufacturer == "" && product == "" && serial == "" {
+			continue
+		}
+		parts := []string{}
+		for _, s := range []string{manufacturer, product, serial} {
+			if s != "" {
+				parts = append(parts, s)
+			}
+		}
+		info := Info{
+			ID:           strings.Join(parts, " "),
+			Manufacturer: manufacturer,
+			Product:      product,
+			Serial:       serial,
+		}
+		if info.Product == "" {
+			info.Product = manufacturer
+		}
+		if info.Product == "" {
+			info.Product = "Android"
 		}
 		if filter != "" && re.FindString(info.ID) == "" {
 			continue
@@ -63,87 +165,6 @@ func ProbeConnected(filter string) ([]Info, error) {
 		return nil, fmt.Errorf("no usable MTP devices found")
 	}
 	return out, nil
-}
-
-// androidMTPInfo reports a phone that is actually in File Transfer mode.
-// Apple's PTP interface looks similar on the bus and is skipped.
-func androidMTPInfo(dev *usb.Device) (Info, bool) {
-	dd, err := dev.GetDeviceDescriptor()
-	if err != nil || dd.IdVendor == 0x05ac {
-		return Info{}, false
-	}
-	var ifaceString byte
-	found := false
-	for i := byte(0); i < dd.NumConfigurations; i++ {
-		cfg, err := dev.GetConfigDescriptor(i)
-		if err != nil {
-			continue
-		}
-		for _, iface := range cfg.Interfaces {
-			for _, alt := range iface.AltSetting {
-				if !mtpEndpoints(alt.EndPoints) {
-					continue
-				}
-				ifaceString = alt.InterfaceStringIndex
-				found = true
-			}
-		}
-	}
-	if !found || ifaceString == 0 {
-		return Info{}, false
-	}
-
-	h, err := dev.Open()
-	if err != nil {
-		return Info{}, false
-	}
-	defer h.Close()
-
-	s, err := h.GetStringDescriptorASCII(ifaceString)
-	if err != nil || !strings.Contains(strings.ToUpper(s), "MTP") {
-		return Info{}, false
-	}
-
-	var parts []string
-	for _, idx := range []byte{dd.Manufacturer, dd.Product, dd.SerialNumber} {
-		if idx == 0 {
-			continue
-		}
-		s, err := h.GetStringDescriptorASCII(idx)
-		if err != nil || s == "" {
-			continue
-		}
-		parts = append(parts, s)
-	}
-	if len(parts) == 0 {
-		return Info{}, false
-	}
-	id := strings.Join(parts, " ")
-	info := Info{ID: id, Product: parts[0]}
-	if len(parts) >= 2 {
-		info.Manufacturer = parts[0]
-		info.Product = parts[1]
-	}
-	if len(parts) >= 3 {
-		info.Serial = strings.Join(parts[2:], " ")
-	}
-	return info, true
-}
-
-func mtpEndpoints(eps []usb.EndpointDescriptor) bool {
-	var inBulk, outBulk, inIntr bool
-	for i := range eps {
-		e := &eps[i]
-		switch {
-		case e.Direction() == usb.ENDPOINT_IN && e.TransferType() == usb.TRANSFER_TYPE_INTERRUPT:
-			inIntr = true
-		case e.Direction() == usb.ENDPOINT_IN && e.TransferType() == usb.TRANSFER_TYPE_BULK:
-			inBulk = true
-		case e.Direction() == usb.ENDPOINT_OUT && e.TransferType() == usb.TRANSFER_TYPE_BULK:
-			outBulk = true
-		}
-	}
-	return inBulk && outBulk && inIntr
 }
 
 // ListInfos enumerates connected MTP devices with storage metadata (for `list` / doctor).

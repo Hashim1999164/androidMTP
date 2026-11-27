@@ -24,8 +24,8 @@ func main() {
 	root := &cobra.Command{
 		Use:   "androidmtp",
 		Short: "Plug-and-play Android MTP → Finder volumes on Apple Silicon",
-		Long: `androidmtp mounts phones in USB File Transfer (MTP) mode as ejectable
-Finder volumes using FUSE-T — no kernel extension.
+		Long: `androidmtp mounts any Android in USB File Transfer (MTP) mode as an
+ejectable Finder volume. No kernel extension.
 
 Plug and play (default after install):
   1. Install once
@@ -99,6 +99,7 @@ Manual:
 	}
 	listCmd.Flags().StringVar(&selector, "dev", "", "filter by ID regex")
 
+	var mountNoFinder bool
 	mountCmd := &cobra.Command{
 		Use:   "mount [device]",
 		Short: "Mount an MTP device into Finder (manual)",
@@ -113,25 +114,26 @@ Manual:
 			errCh := make(chan error, 1)
 			go func() { errCh <- mount.Run(o) }()
 
-			// Open Finder once the volume is up.
-			go func() {
-				for i := 0; i < 40; i++ {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					st, _ := status.Read()
-					if st != nil {
-						if ok, _ := mount.IsMounted(st.MountPoint); ok {
-							notify.Finder(st.MountPoint)
-							notify.Banner("androidmtp", st.VolumeName+" ready in Finder")
+			if !mountNoFinder {
+				go func() {
+					for i := 0; i < 40; i++ {
+						select {
+						case <-ctx.Done():
 							return
+						default:
 						}
+						st, _ := status.Read()
+						if st != nil {
+							if ok, _ := mount.IsMounted(st.MountPoint); ok {
+								notify.Finder(st.MountPoint)
+								notify.Banner("androidmtp", st.VolumeName+" ready in Finder")
+								return
+							}
+						}
+						time.Sleep(200 * time.Millisecond)
 					}
-					time.Sleep(200 * time.Millisecond)
-				}
-			}()
+				}()
+			}
 
 			select {
 			case <-ctx.Done():
@@ -143,6 +145,7 @@ Manual:
 		},
 	}
 	mountFlags(mountCmd)
+	mountCmd.Flags().BoolVar(&mountNoFinder, "no-finder", false, "do not open Finder")
 
 	umountCmd := &cobra.Command{
 		Use:     "umount",
@@ -159,22 +162,21 @@ Manual:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			as, _ := agent.Status()
 			fmt.Printf("plug-and-play: %s\n", as)
-			st, err := status.Read()
-			if err != nil {
-				return err
-			}
-			if st == nil {
+			all := status.List()
+			if len(all) == 0 {
 				fmt.Println("volume: not mounted")
 				return nil
 			}
-			mounted, _ := mount.IsMounted(st.MountPoint)
-			fmt.Printf("volume:  %s\n", st.VolumeName)
-			fmt.Printf("path:    %s\n", st.MountPoint)
-			fmt.Printf("device:  %s\n", st.DeviceID)
-			fmt.Printf("model:   %s\n", st.Model)
-			fmt.Printf("pid:     %d\n", st.PID)
-			fmt.Printf("since:   %s\n", st.StartedAt)
-			fmt.Printf("mounted: %v\n", mounted)
+			for _, st := range all {
+				mounted, _ := mount.IsMounted(st.MountPoint)
+				fmt.Printf("volume:  %s\n", st.VolumeName)
+				fmt.Printf("path:    %s\n", st.MountPoint)
+				fmt.Printf("device:  %s\n", st.DeviceID)
+				fmt.Printf("model:   %s\n", st.Model)
+				fmt.Printf("pid:     %d\n", st.PID)
+				fmt.Printf("since:   %s\n", st.StartedAt)
+				fmt.Printf("mounted: %v\n", mounted)
+			}
 			return nil
 		},
 	}
@@ -219,7 +221,7 @@ Manual:
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose FUSE-T, libusb, agent, and MTP connectivity",
+		Short: "Diagnose the driver, libusb, agent, and MTP connectivity",
 		Run: func(cmd *cobra.Command, args []string) {
 			os.Exit(doctor.Check())
 		},

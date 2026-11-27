@@ -26,37 +26,6 @@ if [[ -x /opt/homebrew/bin/brew ]]; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 
-echo "==> installing FUSE-T (Apple FSKit local volume — not a network drive)"
-if ! brew install --cask fuse-t; then
-  echo "==> cask needs an admin password; installing the signed FSKit app for this user"
-fi
-APP="$HOME/Applications/fuse-t.app"
-if [[ ! -d "$APP" ]]; then
-  PKG="$(ls -t "$HOME/Library/Caches/Homebrew/downloads/"*fuse-t*.pkg 2>/dev/null | head -1 || true)"
-  if [[ -n "${PKG}" ]]; then
-    rm -rf /tmp/androidmtp-fuset
-    pkgutil --expand-full "$PKG" /tmp/androidmtp-fuset
-    FOUND="$(find /tmp/androidmtp-fuset -name 'fuse-t.app' -type d | head -1)"
-    if [[ -n "${FOUND}" ]]; then
-      mkdir -p "$HOME/Applications"
-      rm -rf "$APP"
-      cp -R "$FOUND" "$APP"
-    fi
-  fi
-fi
-if [[ -d "$APP/Contents/Extensions/FskitSrvModule.appex" ]]; then
-  pluginkit -a "$APP/Contents/Extensions/FskitSrvModule.appex" || true
-  pluginkit -e use -i org.fuset.fskit-srv.module || true
-fi
-PROBE="$(mktemp -d /tmp/androidmtp-fskit.XXXXXX)"
-if mount -t fuset /tmp/androidmtp-not-a-session "$PROBE" 2>&1 | grep -q 'is disabled'; then
-  echo "==> one switch: System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → fuse-t"
-  open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" || true
-else
-  echo "==> Apple FSKit is on — the phone mounts as a local volume"
-fi
-rmdir "$PROBE" 2>/dev/null || true
-
 echo "==> installing libusb"
 brew install libusb
 
@@ -71,7 +40,7 @@ brew upgrade hashim1999164/tap/androidmtp || true
 PREFIX="$(brew --prefix androidmtp 2>/dev/null || true)"
 if [[ -n "${PREFIX}" && -x "${PREFIX}/driver/build.sh" ]]; then
   echo "==> installing the Android MTP file system driver"
-  bash "${PREFIX}/driver/build.sh" || echo "warn: driver build needs Xcode signed in with your Apple ID. Until then the phone still mounts as a local volume through fuse-t."
+  bash "${PREFIX}/driver/build.sh" || echo "warn: driver build needs Xcode signed in with your Apple ID."
 fi
 
 echo "==> enabling plug-and-play"

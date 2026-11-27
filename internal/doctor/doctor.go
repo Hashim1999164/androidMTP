@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -34,37 +33,6 @@ func Check() int {
 		check("macOS", false, "androidmtp targets macOS")
 	} else {
 		check("macOS", true, runtime.GOOS)
-	}
-
-	fuseOK := false
-	fuseDetail := "fuse-t not found"
-	for _, p := range []string{
-		"/usr/local/lib/libfuse-t.dylib",
-		filepath.Join(os.Getenv("HOME"), ".fuse-t/usr/local/lib/libfuse-t.dylib"),
-		"/Library/Application Support/fuse-t/lib/libfuse-t-1.2.9.dylib",
-		filepath.Join(os.Getenv("HOME"), "Library/Application Support/fuse-t/lib/libfuse-t-1.2.9.dylib"),
-	} {
-		if _, err := os.Stat(p); err == nil {
-			fuseOK = true
-			fuseDetail = p
-			break
-		}
-	}
-	if !fuseOK {
-		if _, err := exec.LookPath("go-nfsv4"); err == nil {
-			fuseOK = true
-			fuseDetail = "go-nfsv4 on PATH"
-		}
-	}
-	check("FUSE-T", fuseOK, fuseDetail+"  (brew install --cask fuse-t)")
-
-	switch fskitState() {
-	case fskitReady:
-		check("FSKit (local volume)", true, "enabled — phone mounts beside Macintosh HD, not under Network")
-	case fskitInstalled:
-		fmt.Printf("[warn] FSKit — fuse-t is installed but off. System Settings → General → Login Items & Extensions → By Category → File System Extensions → ⓘ → turn on fuse-t\n")
-	default:
-		fmt.Printf("[warn] FSKit — module not registered yet (install.sh registers it)\n")
 	}
 
 	driverOut, _ := exec.Command("pluginkit", "-m", "-i", "org.hashim.androidmtp.fsmodule").Output()
@@ -139,42 +107,13 @@ func Check() int {
 	return 1
 }
 
-type fskitStatus int
-
-const (
-	fskitMissing fskitStatus = iota
-	fskitInstalled
-	fskitReady
-)
-
-// fskitState reports whether macOS will actually mount type "fuset".
-// pluginkit's "+" flag is not that switch.
-func fskitState() fskitStatus {
-	out, _ := exec.Command("pluginkit", "-m", "-i", "org.fuset.fskit-srv.module").Output()
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return fskitMissing
-	}
-	dir, err := os.MkdirTemp("", "androidmtp-fskit-")
-	if err != nil {
-		return fskitInstalled
-	}
-	defer os.RemoveAll(dir)
-	probe := exec.Command("mount", "-t", "fuset", "/tmp/androidmtp-not-a-session", dir)
-	msg, _ := probe.CombinedOutput()
-	if strings.Contains(string(msg), "is disabled") {
-		return fskitInstalled
-	}
-	return fskitReady
-}
-
 func driverDisabled() bool {
 	dir, err := os.MkdirTemp("", "androidmtp-driver-")
 	if err != nil {
 		return false
 	}
 	defer os.RemoveAll(dir)
-	probe := exec.Command("mount", "-t", "androidmtp", "/tmp/androidmtp-not-a-session", dir)
+	probe := exec.Command("/sbin/mount", "-t", "androidmtp", "/tmp/androidmtp-not-a-session", dir)
 	msg, _ := probe.CombinedOutput()
 	return strings.Contains(string(msg), "is disabled")
 }

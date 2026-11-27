@@ -6,7 +6,6 @@ Thanks for helping make Android ↔ macOS file transfer suck less.
 
 ```bash
 brew install go libusb pkg-config
-brew install --cask fuse-t
 make build
 ./bin/androidmtp doctor
 ```
@@ -15,19 +14,20 @@ make build
 
 - `cmd/androidmtp` — CLI entrypoint (cobra)
 - `internal/device` — MTP device discovery / open
-- `internal/fs` — cgofuse filesystem over MTP
+- `internal/fs` — MTP filesystem served to the macOS file system driver
 - `internal/mount` — mountpoint + status + eject
-- `internal/watch` — USB poll daemon
+- `internal/watch` — USB plug-and-play daemon
 - `internal/agent` — launchd LaunchAgent
 - `internal/doctor` — environment checks
-- `third_party/cgofuse` — cgofuse with extra FUSE-T dlopen paths
+- `driver` — Apple FSKit file system extension
+- `third_party/go-mtpfs` — MTP protocol, widened so every Android in File Transfer is accepted
 
 ## Guidelines
 
 1. Keep the CLI the product — no GUI required for core flows.
-2. Prefer Apple Silicon + FUSE-T; do not add macFUSE kext requirements.
+2. The phone is a local FSKit volume. Do not add a network mount, macFUSE, or FUSE-T.
 3. Document MTP limitations honestly in the README when behavior changes.
-4. Single-threaded FUSE (`-s`) stays the default; MTP sessions are not concurrency-safe.
+4. MTP sessions are not concurrency-safe. Keep USB calls on one thread.
 5. Never commit secrets, tokens, or personal device serials from logs.
 
 ## Pull requests

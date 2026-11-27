@@ -1,6 +1,6 @@
 # androidMTP
 
-**Plug your Android into a Mac. It shows up in Finder.**
+**Plug in any Android. It shows up in Finder.**
 
 Apple Silicon · MTP File Transfer · ejectable drive · no Android File Transfer · no kext
 
@@ -31,7 +31,7 @@ androidmtp enable          # turn it back on
 ### Alternative (Homebrew)
 
 ```bash
-brew install --cask fuse-t && brew tap hashim1999164/tap && brew install androidmtp && androidmtp enable
+brew tap hashim1999164/tap && brew install androidmtp && androidmtp enable
 ```
 
 ---
@@ -42,7 +42,7 @@ brew install --cask fuse-t && brew tap hashim1999164/tap && brew install android
 Phone ──USB MTP──► androidmtp driver ──Apple FSKit──► Finder volume
 ```
 
-The driver is a macOS file system extension (`driver/`). A LaunchAgent watches USB, mounts the phone as a local ejectable volume, and opens Finder. One switch, the first time: System Settings → General → Login Items & Extensions → File System Extensions → **Android MTP**. Until that switch is on, the same local volume is provided through the fuse-t FSKit module.
+The driver is a macOS file system extension. A LaunchAgent watches USB and mounts the phone as a local ejectable volume in Finder. The first time, turn on **Android MTP** under System Settings → General → Login Items & Extensions → File System Extensions.
 
 ## Requirements
 
@@ -58,7 +58,7 @@ Limited: cross-folder moves, some in-place edits, recursive folder delete.
 ## Build from source
 
 ```bash
-brew install go libusb pkg-config && brew install --cask fuse-t
+brew install go libusb pkg-config
 git clone https://github.com/Hashim1999164/androidMTP.git && cd androidMTP
 make build && bash driver/build.sh && ./bin/androidmtp enable
 ```
@@ -69,4 +69,4 @@ PRs welcome — [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-MIT — [LICENSE](LICENSE). Uses [go-mtpfs](https://github.com/hanwen/go-mtpfs) (BSD) and [cgofuse](https://github.com/winfsp/cgofuse) (MIT).
+MIT — [LICENSE](LICENSE). Uses [go-mtpfs](https://github.com/hanwen/go-mtpfs) (BSD).

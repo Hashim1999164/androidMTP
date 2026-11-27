@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -75,15 +76,7 @@ func IsMounted(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		for i := 0; i+1 < len(fields); i++ {
-			if fields[i] == "on" && fields[i+1] == path {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
+	return strings.Contains(string(out), " on "+path+" ("), nil
 }
 
 // Unmount forcibly unmounts a path using diskutil then umount.
@@ -103,34 +96,12 @@ func Unmount(path string) error {
 	return fmt.Errorf("failed to unmount %s", path)
 }
 
-// ensureFuseTLibs helps cgofuse find libfuse-t.dylib at the hard-coded path.
-func ensureFuseTLibs() {
-	targets := []struct{ src, dst string }{
-		{
-			filepath.Join(homeDir(), ".fuse-t/usr/local/lib/libfuse-t.dylib"),
-			"/usr/local/lib/libfuse-t.dylib",
-		},
-		{
-			filepath.Join(homeDir(), "Library/Application Support/fuse-t/lib/libfuse-t-1.2.9.dylib"),
-			"/usr/local/lib/libfuse-t.dylib",
-		},
-	}
-	for _, t := range targets {
-		if _, err := os.Stat(t.src); err != nil {
-			continue
-		}
-		if _, err := os.Stat(t.dst); err == nil {
-			return
-		}
-		_ = os.MkdirAll(filepath.Dir(t.dst), 0o755)
-		_ = os.Symlink(t.src, t.dst)
-		return
-	}
-}
-
-// Run opens the device, mounts via FUSE-T/cgofuse, writes status, and blocks until unmount.
+// Run opens the device and mounts it as a local Finder volume.
+// MTP is not safe to call from several threads, so this goroutine stays
+// pinned to one OS thread for the whole session.
 func Run(opts Options) error {
-	ensureFuseTLibs()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 
 	dev, sids, di, err := device.Open(opts.Selector, opts.USBTimeout)
 	if err != nil {
@@ -165,40 +136,60 @@ func Run(opts Options) error {
 		Model:      di.Model,
 		StartedAt:  time.Now().Format(time.RFC3339),
 	})
-	defer status.Clear()
+	defer status.RemovePID(os.Getpid())
 
 	fmt.Fprintf(os.Stderr, "mounted %s → %s\n", volName, mp)
-	if err := mtpfs.MountNative(fsys, mp, volName); err == nil {
-		return nil
-	} else {
-		fmt.Fprintf(os.Stderr, "androidmtp: %v\n", err)
-	}
-	return mtpfs.Mount(fsys, mp, volName, opts.AllowOther)
+	return mtpfs.MountNative(fsys, mp, volName)
 }
 
-// Eject stops a running mount using status + signals + unmount.
+// Eject stops every running mount. It does not call umount: a forced
+// unmount of this volume stays stuck in the kernel and freezes Finder.
 func Eject() error {
-	st, err := status.Read()
-	if err != nil {
-		return err
-	}
-	if st == nil {
+	all := status.List()
+	if len(all) == 0 {
 		return fmt.Errorf("nothing mounted (no status file)")
 	}
-
-	if st.PID > 0 && st.PID != os.Getpid() {
-		if err := syscall.Kill(st.PID, syscall.SIGTERM); err == nil {
-			time.Sleep(400 * time.Millisecond)
+	for _, st := range all {
+		if st.PID > 0 && st.PID != os.Getpid() {
+			_ = syscall.Kill(st.PID, syscall.SIGTERM)
+		}
+	}
+	deadline := time.Now().Add(800 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		alive := false
+		for _, st := range all {
+			if st.PID > 0 && syscall.Kill(st.PID, 0) == nil {
+				alive = true
+			}
+		}
+		if !alive {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, st := range all {
+		if st.PID > 0 && st.PID != os.Getpid() {
 			_ = syscall.Kill(st.PID, syscall.SIGKILL)
 		}
 	}
-	if err := Unmount(st.MountPoint); err != nil {
-		_ = status.Clear()
-		return err
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		left := false
+		for _, st := range all {
+			if ok, _ := IsMounted(st.MountPoint); ok {
+				left = true
+			}
+		}
+		if !left {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	_ = status.Clear()
-	fmt.Printf("ejected %s (%s)\n", st.VolumeName, st.MountPoint)
-	notifyDone(st.VolumeName)
+	for _, st := range all {
+		fmt.Printf("ejected %s (%s)\n", st.VolumeName, st.MountPoint)
+		notifyDone(st.VolumeName)
+	}
 	return nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -12,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/winfsp/cgofuse/fuse"
+	"syscall"
 )
 
 // Wire protocol shared with driver/AndroidMTPFS.swift.
@@ -66,31 +67,119 @@ func MountNative(fsys *FS, mountpoint, volname string) error {
 		return err
 	}
 	defer ln.Close()
-	go serveNative(ln, fsys)
 
-	id := fmt.Sprintf("%d", time.Now().UnixNano())
-	session := filepath.Join(os.TempDir(), "androidmtp-"+id+".session")
-	body := "tcp=" + ln.Addr().String() + "\nid=" + newContainerID() + "\nvolume=" + strings.ReplaceAll(volname, "\n", " ") + "\n"
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return fmt.Errorf("native mount: listener is not tcp")
+	}
+	id := newContainerID()
+	// The file name is the source of truth. The sandboxed file-system extension
+	// can see the URL path even when it cannot read the file contents.
+	session := filepath.Join("/tmp", fmt.Sprintf("androidmtp_%d_%s.session", addr.Port, id))
+	body := fmt.Sprintf("tcp=127.0.0.1:%d\nid=%s\nvolume=%s\n", addr.Port, id, strings.ReplaceAll(volname, "\n", " "))
 	if err := os.WriteFile(session, []byte(body), 0o644); err != nil {
 		return err
 	}
 	defer os.Remove(session)
 
-	cmd := exec.Command("mount", "-t", "androidmtp", session, mountpoint)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return fmt.Errorf("native mount: %s", msg)
+	// Fetch the storage roots before Finder can see the volume, on this thread.
+	prewarm(fsys)
+
+	reqs := make(chan nativeReq)
+	go acceptNative(ln, reqs)
+
+	cmd := exec.Command("/sbin/mount", "-t", "androidmtp", session, mountpoint)
+	var mountOut strings.Builder
+	cmd.Stdout = &mountOut
+	cmd.Stderr = &mountOut
+	if err := cmd.Start(); err != nil {
+		return err
 	}
+	mountDone := make(chan error, 1)
+	go func() { mountDone <- cmd.Wait() }()
+
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	mounted := false
 	for {
-		time.Sleep(500 * time.Millisecond)
-		ok, _ := mountedPath(mountpoint)
-		if !ok {
-			return nil
+		select {
+		case req := <-reqs:
+			errno, body := dispatch(fsys, req.opens, req.op, req.payload)
+			req.reply <- nativeResp{errno: errno, body: body}
+		case err := <-mountDone:
+			mountDone = nil
+			if err != nil {
+				msg := strings.TrimSpace(mountOut.String())
+				if msg == "" {
+					msg = err.Error()
+				}
+				return fmt.Errorf("native mount: %s", msg)
+			}
+			mounted = true
+		case <-tick.C:
+			if !mounted {
+				continue
+			}
+			ok, _ := mountedPath(mountpoint)
+			if !ok {
+				return nil
+			}
 		}
+	}
+}
+
+type nativeReq struct {
+	op      uint16
+	payload []byte
+	opens   map[string]uint64
+	reply   chan nativeResp
+}
+
+type nativeResp struct {
+	errno int32
+	body  []byte
+}
+
+func prewarm(fsys *FS) {
+	var dirs []string
+	fsys.Readdir("/", func(name string, st *Stat, _ int64) bool {
+		if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+			return true
+		}
+		if st != nil && st.Mode&modeDir != 0 {
+			dirs = append(dirs, "/"+name)
+		}
+		return true
+	}, 0, 0)
+	for _, dir := range dirs {
+		fsys.Readdir(dir, func(string, *Stat, int64) bool { return true }, 0, 0)
+	}
+}
+
+func acceptNative(ln net.Listener, reqs chan<- nativeReq) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			opens := map[string]uint64{}
+			for {
+				op, payload, err := readReq(c)
+				if err != nil {
+					log.Printf("native read: %v", err)
+					return
+				}
+				reply := make(chan nativeResp, 1)
+				reqs <- nativeReq{op: op, payload: payload, opens: opens, reply: reply}
+				resp := <-reply
+				if err := writeResp(c, resp.errno, resp.body); err != nil {
+					log.Printf("native write op=%d: %v", op, err)
+					return
+				}
+			}
+		}(conn)
 	}
 }
 
@@ -99,46 +188,14 @@ func mountedPath(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		for i := 0; i+1 < len(fields); i++ {
-			if fields[i] == "on" && fields[i+1] == path {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-func serveNative(ln net.Listener, fsys *FS) {
-	opens := map[string]uint64{}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		handleNative(conn, fsys, opens)
-		conn.Close()
-	}
-}
-
-func handleNative(conn net.Conn, fsys *FS, opens map[string]uint64) {
-	for {
-		op, payload, err := readReq(conn)
-		if err != nil {
-			return
-		}
-		errno, resp := dispatch(fsys, opens, op, payload)
-		if err := writeResp(conn, errno, resp); err != nil {
-			return
-		}
-	}
+	// Volume names contain spaces, so the mount table cannot be split on whitespace.
+	return strings.Contains(string(out), " on "+path+" ("), nil
 }
 
 func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int32, []byte) {
 	switch op {
 	case opStatFS:
-		st := fuse.Statfs_t{}
+		st := Statfs{}
 		if rc := fsys.Statfs("/", &st); rc < 0 {
 			return int32(-rc), nil
 		}
@@ -153,13 +210,14 @@ func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int
 		return getattrBytes(fsys, p)
 	case opReaddir:
 		p, _ := takeCString(payload)
+		log.Printf("readdir %q", p)
 		return readdirBytes(fsys, p)
 	case opOpen:
 		p, rest := takeCString(payload)
 		write := len(rest) > 0 && rest[0] == 1
 		flags := 0
 		if write {
-			flags = fuse.O_RDWR
+			flags = 0
 		}
 		rc, fh := fsys.Open(p, flags)
 		if rc < 0 {
@@ -178,12 +236,12 @@ func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int
 	case opRead:
 		p, rest := takeCString(payload)
 		if len(rest) < 12 {
-			return int32(fuse.EINVAL), nil
+			return int32(syscall.EINVAL), nil
 		}
 		off := int64(binary.LittleEndian.Uint64(rest[0:8]))
 		n := int(binary.LittleEndian.Uint32(rest[8:12]))
 		if n < 0 || n > 4<<20 {
-			return int32(fuse.EINVAL), nil
+			return int32(syscall.EINVAL), nil
 		}
 		buf := make([]byte, n)
 		rc := fsys.Read(p, buf, off, opens[p])
@@ -194,17 +252,17 @@ func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int
 	case opWrite:
 		p, rest := takeCString(payload)
 		if len(rest) < 12 {
-			return int32(fuse.EINVAL), nil
+			return int32(syscall.EINVAL), nil
 		}
 		off := int64(binary.LittleEndian.Uint64(rest[0:8]))
 		n := int(binary.LittleEndian.Uint32(rest[8:12]))
 		if n < 0 || 12+n > len(rest) {
-			return int32(fuse.EINVAL), nil
+			return int32(syscall.EINVAL), nil
 		}
 		data := rest[12 : 12+n]
 		fh, ok := opens[p]
 		if !ok {
-			rc, newFH := fsys.Open(p, fuse.O_RDWR)
+			rc, newFH := fsys.Open(p, 0)
 			if rc < 0 {
 				return int32(-rc), nil
 			}
@@ -226,7 +284,7 @@ func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int
 		return getattrBytes(fsys, p)
 	case opCreate:
 		p, _ := takeCString(payload)
-		rc, fh := fsys.Create(p, fuse.O_RDWR, 0o644)
+		rc, fh := fsys.Create(p, 0, 0o644)
 		if rc < 0 {
 			return int32(-rc), nil
 		}
@@ -254,7 +312,7 @@ func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int
 	case opTruncate:
 		p, rest := takeCString(payload)
 		if len(rest) < 8 {
-			return int32(fuse.EINVAL), nil
+			return int32(syscall.EINVAL), nil
 		}
 		size := int64(binary.LittleEndian.Uint64(rest[:8]))
 		if rc := fsys.Truncate(p, size, opens[p]); rc < 0 {
@@ -262,17 +320,17 @@ func dispatch(fsys *FS, opens map[string]uint64, op uint16, payload []byte) (int
 		}
 		return getattrBytes(fsys, p)
 	default:
-		return int32(fuse.ENOSYS), nil
+		return int32(syscall.ENOSYS), nil
 	}
 }
 
 func getattrBytes(fsys *FS, p string) (int32, []byte) {
-	st := fuse.Stat_t{}
+	st := Stat{}
 	if rc := fsys.Getattr(p, &st, 0); rc < 0 {
 		return int32(-rc), nil
 	}
 	var b [25]byte
-	if st.Mode&fuse.S_IFDIR != 0 {
+	if st.Mode&modeDir != 0 {
 		b[0] = 1
 	}
 	ino := st.Ino
@@ -281,14 +339,14 @@ func getattrBytes(fsys *FS, p string) (int32, []byte) {
 	}
 	binary.LittleEndian.PutUint64(b[1:9], ino)
 	binary.LittleEndian.PutUint64(b[9:17], uint64(st.Size))
-	binary.LittleEndian.PutUint64(b[17:25], uint64(st.Mtim.Sec))
+	binary.LittleEndian.PutUint64(b[17:25], uint64(st.Mtime))
 	return 0, b[:]
 }
 
 func readdirBytes(fsys *FS, p string) (int32, []byte) {
 	var entries []byte
 	var n uint32
-	rc := fsys.Readdir(p, func(name string, st *fuse.Stat_t, _ int64) bool {
+	rc := fsys.Readdir(p, func(name string, st *Stat, _ int64) bool {
 		if name == "." || name == ".." {
 			return true
 		}
@@ -301,7 +359,7 @@ func readdirBytes(fsys *FS, p string) (int32, []byte) {
 		isDir := byte(0)
 		var ino, size, mtime uint64
 		if st != nil {
-			if st.Mode&fuse.S_IFDIR != 0 {
+			if st.Mode&modeDir != 0 {
 				isDir = 1
 			}
 			ino = st.Ino
@@ -309,7 +367,7 @@ func readdirBytes(fsys *FS, p string) (int32, []byte) {
 				ino += 16
 			}
 			size = uint64(st.Size)
-			mtime = uint64(st.Mtim.Sec)
+			mtime = uint64(st.Mtime)
 		}
 		chunk := make([]byte, 2+len(raw)+1+24)
 		binary.LittleEndian.PutUint16(chunk[0:2], uint16(len(raw)))

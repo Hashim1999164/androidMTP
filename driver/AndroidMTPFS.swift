@@ -2,6 +2,9 @@ import Darwin
 import ExtensionFoundation
 import Foundation
 import FSKit
+import os
+
+private let fsLog = Logger(subsystem: "org.hashim.androidmtp.fsmodule", category: "mount")
 
 // Speaks the little-endian socket protocol implemented by internal/fs/native.go.
 private final class MTPConnection {
@@ -29,6 +32,13 @@ private final class MTPConnection {
             let err = errno
             close(fd)
             throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
+        }
+        var tv = timeval(tv_sec: 12, tv_usec: 0)
+        _ = withUnsafePointer(to: &tv) { ptr in
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, ptr, socklen_t(MemoryLayout<timeval>.size))
+        }
+        _ = withUnsafePointer(to: &tv) { ptr in
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, ptr, socklen_t(MemoryLayout<timeval>.size))
         }
         self.fd = fd
     }
@@ -128,23 +138,45 @@ private func parseAttr(_ data: Data) throws -> Attr {
     if data.count < 25 { throw POSIXError(.EIO) }
     return data.withUnsafeBytes { raw in
         let dir = raw.load(fromByteOffset: 0, as: UInt8.self) != 0
-        let ino = raw.load(fromByteOffset: 1, as: UInt64.self)
-        let size = raw.load(fromByteOffset: 9, as: UInt64.self)
-        let mtime = raw.load(fromByteOffset: 17, as: Int64.self)
+        let ino = raw.loadUnaligned(fromByteOffset: 1, as: UInt64.self)
+        let size = raw.loadUnaligned(fromByteOffset: 9, as: UInt64.self)
+        let mtime = raw.loadUnaligned(fromByteOffset: 17, as: Int64.self)
         return Attr(isDir: dir, ino: ino, size: size, mtime: mtime)
     }
 }
 
 private final class MTPItem: FSItem {
     let path: String
-    let itemID: UInt64
+    var itemID: UInt64
+    var parentID: UInt64
     var directory: Bool
-    init(path: String, itemID: UInt64, directory: Bool) {
+    var attr: Attr
+    init(path: String, itemID: UInt64, parentID: UInt64, directory: Bool, attr: Attr) {
         self.path = path
         self.itemID = itemID
+        self.parentID = parentID
         self.directory = directory
+        self.attr = attr
         super.init()
     }
+}
+
+// FSItem.Identifier's Swift initializer only accepts the three reserved values
+// (invalid=0, parent-of-root=1, root=2) and returns nil for a real inode.
+// Falling back to `.rootDirectory` makes every phone file look like the volume
+// root, and Finder's getattrlist then waits forever on that vnode.
+private func fileIdentifier(_ raw: UInt64, isRoot: Bool = false) -> FSItem.Identifier {
+    if isRoot || raw == FSItem.Identifier.rootDirectory.rawValue {
+        return .rootDirectory
+    }
+    if raw == FSItem.Identifier.parentOfRoot.rawValue {
+        return .parentOfRoot
+    }
+    let safe: UInt64 = raw < 3 ? raw &+ 16 : raw
+    if let id = FSItem.Identifier(rawValue: safe), id.rawValue == safe {
+        return id
+    }
+    return unsafeBitCast(safe, to: FSItem.Identifier.self)
 }
 
 private func childPath(_ dir: String, _ name: String) -> String {
@@ -152,9 +184,11 @@ private func childPath(_ dir: String, _ name: String) -> String {
     return dir + "/" + name
 }
 
-private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenCloseOperations, FSVolume.ReadWriteOperations {
+private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.Handler, FSVolume.OpenCloseOperations, FSVolume.ReadWriteOperations, FSVolume.XattrHandler {
     let rpc: MTPConnection
     private var items: [String: MTPItem] = [:]
+    private var totalBytes: UInt64 = 0
+    private var freeBytes: UInt64 = 0
 
     init(rpc: MTPConnection, name: String, id: UUID) {
         self.rpc = rpc
@@ -165,6 +199,7 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
         let caps = FSVolume.SupportedCapabilities()
         caps.supports2TBFiles = true
         caps.supports64BitObjectIDs = true
+        caps.supportsFastStatFS = true
         caps.doesNotSupportSettingFilePermissions = true
         caps.caseFormat = .sensitive
         return caps
@@ -173,13 +208,9 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
     var volumeStatistics: FSStatFSResult {
         let stat = FSStatFSResult(fileSystemTypeName: "androidmtp")
         stat.blockSize = 4096
-        if let data = try? rpc.call(op: 1), data.count >= 16 {
-            let total = data.withUnsafeBytes { $0.load(as: UInt64.self) }
-            let free = data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt64.self) }
-            stat.totalBytes = total
-            stat.availableBytes = free
-            stat.freeBytes = free
-        }
+        stat.totalBytes = totalBytes
+        stat.availableBytes = freeBytes
+        stat.freeBytes = freeBytes
         return stat
     }
 
@@ -195,17 +226,41 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
 
     func activate(options: FSTaskOptions, replyHandler reply: @escaping (FSItem?, Error?) -> Void) {
         do {
+            if let data = try? rpc.call(op: 1), data.count >= 16 {
+                totalBytes = data.withUnsafeBytes { $0.load(as: UInt64.self) }
+                freeBytes = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt64.self) }
+            }
             let attr = try parseAttr(rpc.call(op: 2, payload: cString("/")))
-            let root = remember(path: "/", attr: attr)
+            let root = remember(path: "/", attr: attr, parentID: FSItem.Identifier.parentOfRoot.rawValue)
+            let probe = FSItem.Identifier(rawValue: 100)
+            fsLog.error("id probe 100 \(probe?.rawValue ?? 0, privacy: .public) nil=\(probe == nil, privacy: .public)")
             reply(root, nil)
         } catch {
             reply(nil, error)
         }
     }
 
+    func activateVolume(options: FSTaskOptions, replyHandler reply: @escaping (FSActivateResult?, (any Error)?) -> Void) {
+        activate(options: options) { item, err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            guard let item else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            reply(FSActivateResult(rootItem: item), nil)
+        }
+    }
+
     func deactivate(options: FSDeactivateOptions, replyHandler reply: @escaping (Error?) -> Void) {
         items.removeAll()
         reply(nil)
+    }
+
+    func deactivateVolume(options: FSDeactivateOptions, replyHandler reply: @escaping (Error?) -> Void) {
+        deactivate(options: options, replyHandler: reply)
     }
 
     func reclaimItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
@@ -221,23 +276,67 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
     func lookupItem(named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
         guard let dir = directory as? MTPItem else { reply(nil, nil, POSIXError(.ENOENT)); return }
         let path = childPath(dir.path, name.string ?? "")
+        if (name.string ?? "").hasPrefix(".") {
+            reply(nil, nil, POSIXError(.ENOENT))
+            return
+        }
         do {
             let attr = try parseAttr(rpc.call(op: 2, payload: cString(path)))
-            reply(remember(path: path, attr: attr), name, nil)
+            reply(remember(path: path, attr: attr, parentID: dir.itemID), name, nil)
         } catch {
             reply(nil, nil, error)
+        }
+    }
+
+    func lookupItem(named name: FSFileName, in directory: FSItem, context: FSContext, replyHandler reply: @escaping (FSLookupItemResult?, (any Error)?) -> Void) {
+        lookupItem(named: name, inDirectory: directory) { item, foundName, err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            guard let item = item as? MTPItem, let foundName else {
+                reply(nil, POSIXError(.ENOENT))
+                return
+            }
+            guard let result = FSLookupItemResult(foundItem: item, itemName: foundName, itemAttributes: self.makeAttributes(item)) else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            reply(result, nil)
         }
     }
 
     func createItem(named name: FSFileName, type: FSItem.ItemType, inDirectory directory: FSItem, attributes: FSItem.SetAttributesRequest, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
         guard let dir = directory as? MTPItem else { reply(nil, nil, POSIXError(.EPERM)); return }
         let path = childPath(dir.path, name.string ?? "")
+        if (name.string ?? "").hasPrefix(".") {
+            reply(nil, nil, POSIXError(.EPERM))
+            return
+        }
         let op: UInt16 = type == .directory ? 8 : 9
         do {
             let attr = try parseAttr(rpc.call(op: op, payload: cString(path)))
-            reply(remember(path: path, attr: attr), name, nil)
+            reply(remember(path: path, attr: attr, parentID: dir.itemID), name, nil)
         } catch {
             reply(nil, nil, error)
+        }
+    }
+
+    func createItem(named name: FSFileName, type: FSItem.ItemType, in directory: FSItem, attributes: FSItem.SetAttributesRequest, context: FSContext, replyHandler reply: @escaping (FSCreateItemResult?, (any Error)?) -> Void) {
+        createItem(named: name, type: type, inDirectory: directory, attributes: attributes) { item, createdName, err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            guard let item = item as? MTPItem, let createdName, let dir = directory as? MTPItem else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            guard let result = FSCreateItemResult(newItem: item, newItemName: createdName, newItemAttributes: self.makeAttributes(item), directoryAttributes: self.makeAttributes(dir), freeSpace: nil) else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            reply(result, nil)
         }
     }
 
@@ -245,7 +344,15 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
         reply(nil, nil, POSIXError(.ENOTSUP))
     }
 
+    func createSymbolicLink(named name: FSFileName, in directory: FSItem, attributes: FSItem.SetAttributesRequest, linkContents contents: FSFileName, context: FSContext, replyHandler reply: @escaping (FSCreateSymlinkResult?, (any Error)?) -> Void) {
+        reply(nil, POSIXError(.ENOTSUP))
+    }
+
     func createLink(to item: FSItem, named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
+        reply(nil, POSIXError(.ENOTSUP))
+    }
+
+    func createLink(to item: FSItem, named name: FSFileName, in directory: FSItem, context: FSContext, replyHandler reply: @escaping (FSCreateLinkResult?, (any Error)?) -> Void) {
         reply(nil, POSIXError(.ENOTSUP))
     }
 
@@ -268,6 +375,25 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
         }
     }
 
+    func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, to destinationName: FSFileName, inDirectory destinationDirectory: FSItem, overItem: FSItem?, context: FSContext, replyHandler reply: @escaping (FSRenameItemResult?, (any Error)?) -> Void) {
+        renameItem(item, inDirectory: sourceDirectory, named: sourceName, to: destinationName, inDirectory: destinationDirectory, overItem: overItem) { newName, err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            guard let newName, let renamed = item as? MTPItem, let source = sourceDirectory as? MTPItem, let destination = destinationDirectory as? MTPItem else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            let over = (overItem as? MTPItem).map { self.makeAttributes($0) }
+            guard let result = FSRenameItemResult(newName: newName, renamedItemAttributes: self.makeAttributes(renamed), sourceDirectoryAttributes: self.makeAttributes(source), destinationDirectoryAttributes: self.makeAttributes(destination), overItemAttributes: over, freeSpace: nil) else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            reply(result, nil)
+        }
+    }
+
     func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
         guard let dir = directory as? MTPItem else { reply(POSIXError(.ENOENT)); return }
         let path = childPath(dir.path, name.string ?? "")
@@ -281,65 +407,124 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
         }
     }
 
+    func removeItem(_ item: FSItem, named name: FSFileName, from directory: FSItem, context: FSContext, replyHandler reply: @escaping (FSRemoveItemResult?, (any Error)?) -> Void) {
+        removeItem(item, named: name, fromDirectory: directory) { err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            guard let removed = item as? MTPItem, let dir = directory as? MTPItem else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            guard let result = FSRemoveItemResult(itemAttributes: self.makeAttributes(removed), directoryAttributes: self.makeAttributes(dir), freeSpace: nil) else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            reply(result, nil)
+        }
+    }
+
     func getAttributes(_ desired: FSItem.GetAttributesRequest, of item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         guard let mtp = item as? MTPItem else { reply(nil, POSIXError(.ENOENT)); return }
-        do {
-            let attr = try parseAttr(rpc.call(op: 2, payload: cString(mtp.path)))
-            reply(makeAttributes(attr), nil)
-        } catch {
-            reply(nil, error)
+        fsLog.error("getattr \(mtp.path, privacy: .public) id \(mtp.itemID, privacy: .public)")
+        reply(makeAttributes(mtp), nil)
+    }
+
+    func getAttributes(_ desired: FSItem.GetAttributesRequest, of item: FSItem, context: FSContext, replyHandler reply: @escaping (FSGetAttributesResult?, (any Error)?) -> Void) {
+        guard let mtp = item as? MTPItem else { reply(nil, POSIXError(.ENOENT)); return }
+        fsLog.error("getattr3 \(mtp.path, privacy: .public) id \(mtp.itemID, privacy: .public)")
+        guard let result = FSGetAttributesResult(attributes: makeAttributes(mtp)) else {
+            reply(nil, POSIXError(.EIO))
+            return
         }
+        reply(result, nil)
     }
 
     func setAttributes(_ request: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
         guard let mtp = item as? MTPItem else { reply(nil, POSIXError(.ENOENT)); return }
-        if request.isValid(.size) {
+        if request.isValid(.size), !mtp.directory {
             var payload = cString(mtp.path)
             var size = request.size.littleEndian
             payload.append(Data(bytes: &size, count: 8))
             do {
                 let attr = try parseAttr(rpc.call(op: 13, payload: payload))
-                reply(makeAttributes(attr), nil)
+                mtp.attr = attr
+                mtp.itemID = safeIno(attr.ino, path: mtp.path)
+                reply(makeAttributes(mtp), nil)
                 return
             } catch {
                 reply(nil, error)
                 return
             }
         }
-        do {
-            let attr = try parseAttr(rpc.call(op: 2, payload: cString(mtp.path)))
-            reply(makeAttributes(attr), nil)
-        } catch {
-            reply(nil, error)
+        reply(makeAttributes(mtp), nil)
+    }
+
+    func setAttributes(_ request: FSItem.SetAttributesRequest, on item: FSItem, context: FSContext, replyHandler reply: @escaping (FSSetAttributesResult?, (any Error)?) -> Void) {
+        setAttributes(request, on: item) { attrs, err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            guard let attrs, let result = FSSetAttributesResult(attributes: attrs, freeSpace: nil) else {
+                reply(nil, POSIXError(.EIO))
+                return
+            }
+            reply(result, nil)
         }
     }
 
     func enumerateDirectory(_ directory: FSItem, startingAt cookie: FSDirectoryCookie, verifier: FSDirectoryVerifier, attributes: FSItem.GetAttributesRequest?, packer: FSDirectoryEntryPacker, replyHandler reply: @escaping (FSDirectoryVerifier, Error?) -> Void) {
         guard let dir = directory as? MTPItem else { reply(verifier, POSIXError(.ENOTDIR)); return }
+        fsLog.error("readdir \(dir.path, privacy: .public) cookie \(cookie.rawValue, privacy: .public)")
         do {
             let data = try rpc.call(op: 3, payload: cString(dir.path))
-            var entries: [(String, Attr)] = []
+            var entries: [(String, Attr, UInt64)] = []
             if attributes == nil {
-                entries.append((".", Attr(isDir: true, ino: dir.itemID, size: 0, mtime: 0)))
-                entries.append(("..", Attr(isDir: true, ino: FSItem.Identifier.rootDirectory.rawValue, size: 0, mtime: 0)))
+                let dotDot = dir.path == "/" ? dir.itemID : dir.parentID
+                entries.append((".", Attr(isDir: true, ino: dir.itemID, size: 0, mtime: dir.attr.mtime), dir.itemID))
+                entries.append(("..", Attr(isDir: true, ino: dotDot, size: 0, mtime: 0), dotDot))
             }
-            entries.append(contentsOf: try parseDir(data))
-            var index = cookie == .initial ? 0 : Int(cookie.rawValue)
-            if index < 0 || index > entries.count {
-                reply(verifier, POSIXError(.EINVAL))
+            for parsed in try parseDir(data) {
+                let child = remember(path: childPath(dir.path, parsed.0), attr: parsed.1, parentID: dir.itemID)
+                entries.append((parsed.0, child.attr, child.itemID))
+            }
+            // nextCookie is the index of the next entry. 0 is only the initial cookie,
+            // so a finished page never restarts the directory.
+            let start = cookie == .initial || cookie.rawValue == 0 ? 0 : Int(cookie.rawValue)
+            if start < 0 || start > entries.count {
+                reply(verifier, NSError(domain: FSKitErrorDomain, code: 4506))
                 return
             }
+            var index = start
+            var packed = 0
             while index < entries.count {
                 let entry = entries[index]
                 let next = FSDirectoryCookie(rawValue: UInt64(index + 1))
-                let attrs: FSItem.Attributes? = attributes == nil ? nil : makeAttributes(entry.1)
-                let ok = packer.packEntry(name: FSFileName(string: entry.0), itemType: entry.1.isDir ? .directory : .file, itemID: FSItem.Identifier(rawValue: entry.1.ino) ?? .rootDirectory, nextCookie: next, attributes: attrs)
-                index += 1
+                let item = MTPItem(path: entry.0 == "." || entry.0 == ".." ? dir.path : childPath(dir.path, entry.0), itemID: entry.2, parentID: dir.itemID, directory: entry.1.isDir, attr: entry.1)
+                let attrs: FSItem.Attributes? = attributes == nil ? nil : makeAttributes(item)
+                let id = fileIdentifier(entry.2, isRoot: dir.path == "/" && (entry.0 == "." || entry.0 == ".."))
+                let ok = packer.packEntry(name: FSFileName(string: entry.0), itemType: entry.1.isDir ? .directory : .file, itemID: id, nextCookie: next, attributes: attrs)
                 if !ok { break }
+                index += 1
+                packed += 1
             }
+            fsLog.error("readdir \(dir.path, privacy: .public) packed \(packed, privacy: .public) of \(entries.count, privacy: .public)")
             reply(FSDirectoryVerifier(rawValue: 1), nil)
         } catch {
+            fsLog.error("readdir fail \(String(describing: error), privacy: .public)")
             reply(verifier, error)
+        }
+    }
+
+    func enumerateDirectory(_ directory: FSItem, startingAt cookie: FSDirectoryCookie, verifier: FSDirectoryVerifier, attributes: FSItem.GetAttributesRequest?, packer: FSDirectoryEntryPacker, context: FSContext, replyHandler reply: @escaping (FSEnumerateDirectoryResult?, (any Error)?) -> Void) {
+        enumerateDirectory(directory, startingAt: cookie, verifier: verifier, attributes: attributes, packer: packer) { current, err in
+            if let err {
+                reply(nil, err)
+                return
+            }
+            reply(FSEnumerateDirectoryResult(verifier: current.rawValue), nil)
         }
     }
 
@@ -347,17 +532,68 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
         reply(nil, POSIXError(.ENOTSUP))
     }
 
+    func readSymbolicLink(_ item: FSItem, context: FSContext, replyHandler reply: @escaping (FSReadSymlinkResult?, (any Error)?) -> Void) {
+        reply(nil, POSIXError(.ENOTSUP))
+    }
+
+    var xattrOperationsInhibited: Bool { false }
+
+    func supportedXattrNames(for item: FSItem) -> [FSFileName] { [] }
+
+    func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, Error?) -> Void) {
+        reply(nil, POSIXError(.ENOATTR))
+    }
+
+    func getXattr(named name: FSFileName, of item: FSItem, context: FSContext, replyHandler reply: @escaping (FSGetXattrResult?, (any Error)?) -> Void) {
+        reply(nil, POSIXError(.ENOATTR))
+    }
+
+    func setXattr(named name: FSFileName, to value: Data?, on item: FSItem, policy: FSVolume.SetXattrPolicy, replyHandler reply: @escaping (Error?) -> Void) {
+        reply(POSIXError(.EPERM))
+    }
+
+    func setXattr(named name: FSFileName, to value: Data?, on item: FSItem, policy: FSVolume.SetXattrPolicy, context: FSContext, replyHandler reply: @escaping (FSSetXattrResult?, (any Error)?) -> Void) {
+        reply(nil, POSIXError(.EPERM))
+    }
+
+    func listXattrs(of item: FSItem, replyHandler reply: @escaping ([FSFileName]?, Error?) -> Void) {
+        reply([], nil)
+    }
+
+    func listXattrs(of item: FSItem, context: FSContext, replyHandler reply: @escaping (FSListXattrsResult?, (any Error)?) -> Void) {
+        guard let result = FSListXattrsResult(xattrNames: []) else {
+            reply(nil, POSIXError(.ENOATTR))
+            return
+        }
+        reply(result, nil)
+    }
+
     func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
-        guard let mtp = item as? MTPItem, !mtp.directory else { reply(nil); return }
-        var payload = cString(mtp.path)
-        let write: UInt8 = 1
-        payload.append(write)
         do {
-            _ = try rpc.call(op: 4, payload: payload)
+            try openFile(item, modes: modes)
             reply(nil)
         } catch {
             reply(error)
         }
+    }
+
+    func openItem(_ item: FSItem, modes: FSVolume.OpenModes, context: FSContext, replyHandler reply: @escaping (Error?) -> Void) {
+        openItem(item, modes: modes, replyHandler: reply)
+    }
+
+    private func openFile(_ item: FSItem, modes: FSVolume.OpenModes) throws {
+        guard let mtp = item as? MTPItem, !mtp.directory else { return }
+        var payload = cString(mtp.path)
+        var write: UInt8 = 0
+        if modes.contains(.write) {
+            write = 1
+        }
+        payload.append(write)
+        _ = try rpc.call(op: 4, payload: payload)
+    }
+
+    func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, context: FSContext, replyHandler reply: @escaping (Error?) -> Void) {
+        closeItem(item, modes: modes, replyHandler: reply)
     }
 
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
@@ -408,31 +644,47 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
         }
     }
 
-    private func remember(path: String, attr: Attr) -> MTPItem {
+    private func safeIno(_ ino: UInt64, path: String) -> UInt64 {
+        if path == "/" {
+            return FSItem.Identifier.rootDirectory.rawValue
+        }
+        return ino < 3 ? ino &+ 16 : ino
+    }
+
+    private func remember(path: String, attr: Attr, parentID: UInt64) -> MTPItem {
+        let id = safeIno(attr.ino, path: path)
         if let existing = items[path] {
             existing.directory = attr.isDir
+            existing.attr = attr
+            existing.itemID = id
+            existing.parentID = parentID
             return existing
         }
-        let item = MTPItem(path: path, itemID: attr.ino, directory: attr.isDir)
+        let item = MTPItem(path: path, itemID: id, parentID: parentID, directory: attr.isDir, attr: attr)
         items[path] = item
         return item
     }
 
-    private func makeAttributes(_ attr: Attr) -> FSItem.Attributes {
+    private func makeAttributes(_ item: MTPItem) -> FSItem.Attributes {
+        let attr = item.attr
         let a = FSItem.Attributes()
         a.type = attr.isDir ? .directory : .file
         a.mode = attr.isDir ? 0o755 : 0o644
         a.linkCount = attr.isDir ? 2 : 1
         a.uid = getuid()
         a.gid = getgid()
-        a.size = attr.size
-        a.allocSize = (attr.size + 4095) & ~4095
-        a.fileID = FSItem.Identifier(rawValue: attr.ino) ?? .rootDirectory
-        let ts = timespec(tv_sec: Int(attr.mtime), tv_nsec: 0)
+        a.size = attr.isDir ? 0 : attr.size
+        a.allocSize = attr.isDir ? 0 : (attr.size + 4095) & ~4095
+        a.fileID = fileIdentifier(item.itemID, isRoot: item.path == "/")
+        a.parentID = fileIdentifier(item.parentID, isRoot: false)
+        a.flags = 0
+        a.supportsLimitedXAttrs = false
+        let ts = timespec(tv_sec: max(Int(attr.mtime), 0), tv_nsec: 0)
         a.modifyTime = ts
         a.changeTime = ts
         a.accessTime = ts
         a.birthTime = ts
+        a.addedTime = ts
         return a
     }
 
@@ -444,15 +696,15 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
             var off = 4
             for _ in 0..<count {
                 if off + 2 > raw.count { throw POSIXError(.EIO) }
-                let namelen = Int(raw.load(fromByteOffset: off, as: UInt16.self))
+                let namelen = Int(raw.loadUnaligned(fromByteOffset: off, as: UInt16.self))
                 off += 2
                 if off + namelen + 25 > raw.count { throw POSIXError(.EIO) }
                 let name = String(bytes: raw[off..<off + namelen], encoding: .utf8) ?? ""
                 off += namelen
                 let isDir = raw.load(fromByteOffset: off, as: UInt8.self) != 0
-                let ino = raw.load(fromByteOffset: off + 1, as: UInt64.self)
-                let size = raw.load(fromByteOffset: off + 9, as: UInt64.self)
-                let mtime = raw.load(fromByteOffset: off + 17, as: Int64.self)
+                let ino = raw.loadUnaligned(fromByteOffset: off + 1, as: UInt64.self)
+                let size = raw.loadUnaligned(fromByteOffset: off + 9, as: UInt64.self)
+                let mtime = raw.loadUnaligned(fromByteOffset: off + 17, as: Int64.self)
                 off += 25
                 out.append((name, Attr(isDir: isDir, ino: ino, size: size, mtime: mtime)))
             }
@@ -462,14 +714,27 @@ private final class MTPVolume: FSVolume, FSVolume.Operations, FSVolume.OpenClose
 }
 
 private func sessionFields(_ url: URL) -> [String: String] {
-    _ = url.startAccessingSecurityScopedResource()
-    defer { url.stopAccessingSecurityScopedResource() }
-    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
     var fields: [String: String] = [:]
-    for line in text.split(separator: "\n") {
-        let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
-        if parts.count == 2 { fields[parts[0]] = parts[1] }
+    let scoped = url.startAccessingSecurityScopedResource()
+    defer {
+        if scoped {
+            url.stopAccessingSecurityScopedResource()
+        }
     }
+    if let text = try? String(contentsOf: url, encoding: .utf8) {
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2 { fields[parts[0]] = parts[1] }
+        }
+    }
+    // The extension sandbox often cannot read the session file. The file name
+    // carries the same port and container id: androidmtp_<port>_<uuid>.session
+    let bits = url.deletingPathExtension().lastPathComponent.split(separator: "_", maxSplits: 2).map(String.init)
+    if bits.count == 3, bits[0] == "androidmtp" {
+        if fields["tcp"] == nil { fields["tcp"] = "127.0.0.1:" + bits[1] }
+        if fields["id"] == nil { fields["id"] = bits[2] }
+    }
+    fsLog.error("session path=\(url.path, privacy: .public) scoped=\(scoped) tcp=\(fields["tcp"] ?? "-", privacy: .public)")
     return fields
 }
 
@@ -491,6 +756,7 @@ final class AndroidMTPFS: FSUnaryFileSystem, FSUnaryFileSystemOperations {
 
     func loadResource(resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping (FSVolume?, (any Error)?) -> Void) {
         guard let pathResource = resource as? FSPathURLResource else {
+            fsLog.error("load resource type \(String(describing: type(of: resource)), privacy: .public)")
             reply(nil, POSIXError(.EINVAL))
             return
         }
@@ -510,6 +776,7 @@ final class AndroidMTPFS: FSUnaryFileSystem, FSUnaryFileSystemOperations {
             containerStatus = .ready
             reply(volume, nil)
         } catch {
+            fsLog.error("load connect failed \(String(describing: error), privacy: .public)")
             reply(nil, error)
         }
     }
