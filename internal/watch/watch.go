@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Hashim1999164/androidMTP/internal/agent"
 	"github.com/Hashim1999164/androidMTP/internal/device"
 	"github.com/Hashim1999164/androidMTP/internal/mount"
 	"github.com/Hashim1999164/androidMTP/internal/notify"
@@ -48,6 +49,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "androidmtp: plug-and-play watcher active — connect a phone in File Transfer mode")
+	agent.ShowOnDesktop()
 
 	if androidmtpMounts() > 0 {
 		fmt.Fprintln(os.Stderr, "androidmtp: refreshing disks already on the Mac")

@@ -25,7 +25,7 @@ func main() {
 		Use:   "androidmtp",
 		Short: "Plug-and-play Android MTP → Finder volumes on Apple Silicon",
 		Long: `androidmtp mounts any Android in USB File Transfer (MTP) mode as an
-ejectable Finder volume. No kernel extension.
+ejectable disk in Finder and on the Desktop. No kernel extension.
 
 Plug and play (default after install):
   1. Install once

@@ -1,20 +1,20 @@
-# androidMTP
+# androidMTP — Android File Transfer for Mac
 
-**Plug in any Android. It shows up in Finder.**
+**Plug any Android into a Mac. It shows up in Finder and on the Desktop.**
 
-Apple Silicon · MTP File Transfer · ejectable drive · no Android File Transfer · no kext
+Open-source MTP for Apple Silicon. USB File Transfer becomes a normal ejectable drive: browse, copy, paste, and eject. No Android File Transfer app. No kernel extension.
+
+Works with any phone in File Transfer mode — Samsung, Pixel, Xiaomi, OnePlus, Motorola, Oppo, and the rest.
 
 ---
 
-## Install (copy → paste → enter)
+## Install
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Hashim1999164/androidMTP/main/install.sh)"
 ```
 
-That one command installs everything and turns on plug-and-play.
-
-Then: unlock phone → plug USB → **File Transfer / MTP** → Finder opens the phone.
+One command installs plug-and-play. Then: unlock the phone, plug in USB, choose **File Transfer / MTP**. The phone appears in Finder and on the Desktop.
 
 ---
 
@@ -28,7 +28,7 @@ androidmtp disable         # turn auto-mount off
 androidmtp enable          # turn it back on
 ```
 
-### Alternative (Homebrew)
+### Homebrew
 
 ```bash
 brew tap hashim1999164/tap && brew install androidmtp && androidmtp enable
@@ -36,13 +36,15 @@ brew tap hashim1999164/tap && brew install androidmtp && androidmtp enable
 
 ---
 
-## How it works
+## How Android file transfer works on Mac
 
 ```
-Phone ──USB MTP──► androidmtp driver ──Apple FSKit──► Finder volume
+Phone ──USB MTP──► androidmtp driver ──Apple FSKit──► Finder and the Desktop
 ```
 
-The driver is a macOS file system extension. A LaunchAgent watches USB and mounts the phone as a local ejectable volume in Finder. The first time, turn on **Android MTP** under System Settings → General → Login Items & Extensions → File System Extensions.
+macOS has no built-in MTP drive. androidMTP is a file system extension that mounts the phone as a local disk. A helper watches the USB cable: plug in and the disk appears, unplug and it goes away.
+
+The first time, turn on **Android MTP** under System Settings → General → Login Items & Extensions → File System Extensions.
 
 ## Requirements
 

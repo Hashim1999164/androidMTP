@@ -186,10 +186,11 @@ func Install(bin string) error {
 	}
 	_ = exec.Command("launchctl", "enable", domain+"/"+label).Run()
 	_ = exec.Command("launchctl", "kickstart", "-k", domain+"/"+label).Run()
+	ShowOnDesktop()
 
 	fmt.Println("androidmtp plug-and-play: ON")
 	fmt.Printf("  agent: %s\n", plist)
-	fmt.Println("  Plug in your Android → File Transfer / MTP → it appears in Finder.")
+	fmt.Println("  Plug in your Android → File Transfer / MTP → it appears in Finder and on the Desktop.")
 	fmt.Println("  Disable anytime: androidmtp disable")
 	return nil
 }

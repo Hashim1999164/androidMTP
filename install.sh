@@ -61,7 +61,7 @@ echo
 echo "  1. Unlock your Android phone"
 echo "  2. Plug in USB"
 echo "  3. Choose File Transfer / MTP"
-echo "  4. Wait a few seconds → Finder opens the phone"
+echo "  4. Wait a few seconds → the phone is in Finder and on the Desktop"
 echo
 echo "  status:  androidmtp status"
 echo "  doctor:  androidmtp doctor"
